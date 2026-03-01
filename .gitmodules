@@ -1,0 +1,6 @@
+[submodule "vendor/ft_yacc"]
+	path = vendor/ft_yacc
+	url = git@github.com:Univers42/ft_yacc.git
+[submodule "vendor/ft_lex"]
+	path = vendor/ft_lex
+	url = git@github.com:Univers42/ft_lex.git

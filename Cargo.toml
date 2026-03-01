@@ -1,0 +1,20 @@
+[package]
+name = "cc1"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.78"
+authors = ["dlesieur"]
+description = "cc1 — A C89 front-end for LLVM, written in Rust"
+default-run = "cc1"
+
+[[bin]]
+name = "cc1"
+path = "src/main.rs"
+
+[dependencies]
+bumpalo = { version = "3", features = ["collections"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = "symbols"
