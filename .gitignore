@@ -1,0 +1,21 @@
+docs/README.md
+docs/txt
+
+# Build artifacts
+/target/
+**/*.o
+**/*.ll
+**/*.s
+*.out
+
+# Editor
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary test artifacts
+/tmp/
