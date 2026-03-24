@@ -1,0 +1,139 @@
+// ir/optimize/gvn.rs — Dominator-based Global Value Numbering (CSE).
+//
+// Walks the dominator tree in depth-first order, maintaining scoped hash
+// tables that map expression keys to previously computed values.
+// Also performs redundant load elimination and store-to-load forwarding.
+
+use crate::ir::instruction::Instruction;
+use crate::ir::module::IrFunction;
+use crate::ir::types::*;
+use std::collections::HashMap;
+
+/// Expression key for value numbering.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum ExprKey {
+    BinOp {
+        op: BinOpKind,
+        lhs: ValueId,
+        rhs: ValueId,
+        ty: IrType,
+    },
+    UnaryOp {
+        op: UnaryOpKind,
+        operand: ValueId,
+        ty: IrType,
+    },
+    Icmp {
+        pred: IcmpPred,
+        lhs: ValueId,
+        rhs: ValueId,
+    },
+    Fcmp {
+        pred: FcmpPred,
+        lhs: ValueId,
+        rhs: ValueId,
+    },
+    Cast {
+        kind: CastKind,
+        src: ValueId,
+        src_ty: IrType,
+        dst_ty: IrType,
+    },
+    Gep {
+        base: ValueId,
+        offset: ValueId,
+        elem_ty: IrType,
+    },
+}
+
+/// Run GVN on a single function. Returns true if any changes were made.
+pub fn gvn(func: &mut IrFunction) -> bool {
+    if func.blocks.is_empty() {
+        return false;
+    }
+
+    let mut changed = false;
+
+    // Simple local CSE: within each basic block, hash instructions
+    // and replace duplicates with copies.
+    for bi in 0..func.blocks.len() {
+        let mut expr_map: HashMap<ExprKey, ValueId> = HashMap::new();
+        let mut load_map: HashMap<ValueId, ValueId> = HashMap::new(); // addr_vn -> loaded value
+        let mut store_fwd: HashMap<ValueId, (ValueId, IrType)> = HashMap::new(); // addr_vn -> (stored val, ty)
+
+        for ii in 0..func.blocks[bi].insts.len() {
+            let inst = &func.blocks[bi].insts[ii];
+
+            // Memory clobbering invalidates load CSE
+            if inst.clobbers_memory() {
+                load_map.clear();
+                store_fwd.clear();
+
+                // But capture store-to-load forwarding for this store
+                if let Instruction::Store { addr, value, ty } = inst {
+                    if let Operand::Value(addr_vn) = addr {
+                        store_fwd.insert(*addr_vn, (
+                            match value {
+                                Operand::Value(v) => *v,
+                                _ => continue,
+                            },
+                            ty.clone(),
+                        ));
+                    }
+                }
+                continue;
+            }
+
+            // Load elimination
+            if let Instruction::Load { result, addr, ty } = inst {
+                if let Operand::Value(addr_vn) = addr {
+                    // Store-to-load forwarding
+                    if let Some((stored_val, stored_ty)) = store_fwd.get(addr_vn) {
+                        if stored_ty == ty && !ty.is_float() {
+                            let new_result = *result;
+                            func.blocks[bi].insts[ii] = Instruction::Copy {
+                                result: new_result,
+                                src: Operand::Value(*stored_val),
+                            };
+                            changed = true;
+                            continue;
+                        }
+                    }
+                    // Redundant load elimination
+                    if let Some(prev_val) = load_map.get(addr_vn) {
+                        let new_result = *result;
+                        func.blocks[bi].insts[ii] = Instruction::Copy {
+                            result: new_result,
+                            src: Operand::Value(*prev_val),
+                        };
+                        changed = true;
+                        continue;
+                    }
+                    // Record this load
+                    load_map.insert(*addr_vn, *result);
+                }
+                continue;
+            }
+
+            // Pure expression CSE
+            if let Some(key) = make_expr_key(inst) {
+                if let Some(result) = inst.result() {
+                    if let Some(&prev) = expr_map.get(&key) {
+                        // Replace with copy
+                        func.blocks[bi].insts[ii] = Instruction::Copy {
+                            result,
+                            src: Operand::Value(prev),
+                        };
+                        changed = true;
+                    } else {
+                        expr_map.insert(key, result);
+                    }
+                }
+            }
+        }
+    }
+
+    changed
+}
+
+/// Create an expression key for an instruction (for CSE).
