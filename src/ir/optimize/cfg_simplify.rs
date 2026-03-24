@@ -188,3 +188,83 @@ fn thread_jump_chains(func: &mut IrFunction) -> bool {
 }
 
 /// Remove dead (unreachable) blocks via BFS from the entry.
+fn remove_dead_blocks(func: &mut IrFunction) -> bool {
+    if func.blocks.is_empty() {
+        return false;
+    }
+
+    // BFS reachability
+    let mut reachable = vec![false; func.blocks.len()];
+    let mut queue = VecDeque::new();
+    reachable[0] = true;
+    queue.push_back(BlockId(0));
+
+    // Also mark blocks referenced by LabelAddr as reachable
+    for block in &func.blocks {
+        for inst in &block.insts {
+            if let Instruction::LabelAddr { block: bid, .. } = inst {
+                let idx = bid.0 as usize;
+                if idx < reachable.len() && !reachable[idx] {
+                    reachable[idx] = true;
+                    queue.push_back(*bid);
+                }
+            }
+        }
+    }
+
+    while let Some(bid) = queue.pop_front() {
+        let succs = func.blocks[bid.0 as usize].terminator.successors();
+        for succ in succs {
+            let si = succ.0 as usize;
+            if si < reachable.len() && !reachable[si] {
+                reachable[si] = true;
+                queue.push_back(succ);
+            }
+        }
+    }
+
+    // Check if any block is unreachable
+    let any_dead = reachable.iter().any(|&r| !r);
+    if !any_dead {
+        return false;
+    }
+
+    // Collect live block indices and build remapping
+    let dead_ids: HashSet<BlockId> = reachable
+        .iter()
+        .enumerate()
+        .filter(|(_, &r)| !r)
+        .map(|(i, _)| BlockId(i as u32))
+        .collect();
+
+    // Remove phi entries from dead predecessors
+    for block in &mut func.blocks {
+        for inst in &mut block.insts {
+            if let Instruction::Phi { incoming, .. } = inst {
+                incoming.retain(|(bb, _)| !dead_ids.contains(bb));
+            }
+        }
+    }
+
+    // Replace dead blocks with empty blocks (we can't easily remove them
+    // since BlockId is an index). Instead, mark them with Unreachable terminator
+    // and clear their instructions.
+    let mut changed = false;
+    for (i, r) in reachable.iter().enumerate() {
+        if !r {
+            // Only mark changed if the block wasn't already dead
+            if !func.blocks[i].insts.is_empty()
+                || !matches!(func.blocks[i].terminator, Terminator::Unreachable)
+            {
+                func.blocks[i].insts.clear();
+                func.blocks[i].terminator = Terminator::Unreachable;
+                func.blocks[i].preds.clear();
+                changed = true;
+            }
+        }
+    }
+
+    changed
+}
+
+/// Simplify trivial phi nodes (single incoming or all-same values).
