@@ -398,3 +398,103 @@ pub fn parse_cli_args(driver: &mut Driver, argv0: &str, args: &[String]) -> Resu
                 driver.enable_ssse3 = true;
                 driver.enable_sse4_1 = true;
             }
+            "-msse4.2" => {
+                driver.enable_sse3 = true;
+                driver.enable_ssse3 = true;
+                driver.enable_sse4_1 = true;
+                driver.enable_sse4_2 = true;
+            }
+            "-mavx" => {
+                driver.enable_sse3 = true;
+                driver.enable_ssse3 = true;
+                driver.enable_sse4_1 = true;
+                driver.enable_sse4_2 = true;
+                driver.enable_avx = true;
+            }
+            "-mavx2" => {
+                driver.enable_sse3 = true;
+                driver.enable_ssse3 = true;
+                driver.enable_sse4_1 = true;
+                driver.enable_sse4_2 = true;
+                driver.enable_avx = true;
+                driver.enable_avx2 = true;
+            }
+
+            "-mgeneral-regs-only" => driver.general_regs_only = true,
+            "-mcmodel=kernel" => driver.code_model_kernel = true,
+            "-fno-jump-tables" | "-mno-jump-tables" => driver.no_jump_tables = true,
+            "-ffunction-sections" => driver.function_sections = true,
+            "-fno-function-sections" => driver.function_sections = false,
+            "-fdata-sections" => driver.data_sections = true,
+            "-fno-data-sections" => driver.data_sections = false,
+
+            a if a.starts_with("-mregparm=") => {
+                let val = &a["-mregparm=".len()..];
+                driver.regparm = val.parse().unwrap_or(0).min(3);
+            }
+
+            "-fomit-frame-pointer" => driver.omit_frame_pointer = true,
+            "-fno-omit-frame-pointer" => driver.omit_frame_pointer = false,
+            "-fno-asynchronous-unwind-tables" => driver.no_unwind_tables = true,
+            "-fasynchronous-unwind-tables" => driver.no_unwind_tables = false,
+            "-fcommon" => driver.fcommon = true,
+            "-fno-common" => driver.fcommon = false,
+            "-fgnu89-inline" => driver.gnu89_inline = true,
+            "-fno-gnu89-inline" => driver.gnu89_inline = false,
+
+            // ── RISC-V specific ────────────────────────────────────
+
+            a if a.starts_with("-mabi=") => {
+                driver.riscv_abi = Some(a["-mabi=".len()..].to_string());
+            }
+            a if a.starts_with("-march=") => {
+                driver.riscv_march = Some(a["-march=".len()..].to_string());
+            }
+            "-mno-relax" => driver.riscv_no_relax = true,
+
+            // ── Linker flags ───────────────────────────────────────
+
+            "-L" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("-L requires an argument".into());
+                }
+                driver.linker_paths.push(args[i].clone());
+            }
+            a if a.starts_with("-L") => {
+                driver.linker_paths.push(a[2..].to_string());
+            }
+            a if a.starts_with("-l") => {
+                driver.linker_ordered_items.push(a.to_string());
+            }
+            "-static" => driver.static_link = true,
+            "-shared" => driver.shared_lib = true,
+            "-nostdlib" => driver.nostdlib = true,
+            "-r" => driver.relocatable = true,
+
+            // ── Linker pass-through ────────────────────────────────
+
+            a if a.starts_with("-Wl,") => {
+                let items = &a[4..];
+                // Check for --version probe (Meson linker detection).
+                if items == "--version" && driver.input_files.is_empty() {
+                    println!("GNU ld (Claude's C Compiler built-in) 2.42");
+                    return Ok(true);
+                }
+                // Split on comma and add individually to preserve order.
+                for part in items.split(',') {
+                    if !part.is_empty() {
+                        driver.linker_ordered_items.push(format!("-Wl,{}", part));
+                    }
+                }
+            }
+
+            // ── Preprocessor pass-through ──────────────────────────
+
+            a if a.starts_with("-Wp,") => {
+                let parts: Vec<&str> = a[4..].split(',').collect();
+                let mut j = 0;
+                while j < parts.len() {
+                    match parts[j] {
+                        "-MMD" | "-MD" => {
+                            if j + 1 < parts.len() {
