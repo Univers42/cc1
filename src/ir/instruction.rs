@@ -469,6 +469,14 @@ impl Instruction {
             }
         }
     }
+
+    /// Returns true if this instruction has side effects and should never be deleted by DCE.
+    pub fn has_side_effects(&self) -> bool {
+        matches!(
+            self,
+            Instruction::Store { .. }
+                | Instruction::Call { .. }
+                | Instruction::CallIndirect { .. }
     }
 }
 
