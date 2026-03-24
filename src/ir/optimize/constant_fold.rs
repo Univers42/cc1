@@ -545,3 +545,46 @@ mod tests {
     }
 
     #[test]
+    fn test_fold_cast() {
+        let result = fold_cast(
+            CastKind::ZExt,
+            &ConstValue::U8(255),
+            &IrType::U8,
+            &IrType::U32,
+        );
+        assert_eq!(result, Some(ConstValue::U32(255)));
+    }
+
+    #[test]
+    fn test_fold_chain() {
+        let mut f = IrFunction::new("test", IrType::I32, Linkage::External);
+        let b = f.create_block("entry");
+        let v0 = f.alloc_value();
+        let v1 = f.alloc_value();
+        f.block_mut(b).push(Instruction::BinOp {
+            result: v0,
+            op: BinOpKind::Add,
+            lhs: Operand::Const(ConstValue::I32(3)),
+            rhs: Operand::Const(ConstValue::I32(4)),
+            ty: IrType::I32,
+        });
+        f.block_mut(b).push(Instruction::BinOp {
+            result: v1,
+            op: BinOpKind::Mul,
+            lhs: Operand::Value(v0),
+            rhs: Operand::Const(ConstValue::I32(2)),
+            ty: IrType::I32,
+        });
+        f.block_mut(b).set_terminator(Terminator::Ret {
+            value: Some(Operand::Value(v1)),
+        });
+
+        assert!(constant_fold(&mut f));
+        // v0 = 7, v1 = 14. Both should become Copy of constants.
+        if let Instruction::Copy { src: Operand::Const(ConstValue::I32(14)), .. } = &f.block(b).insts[1] {
+            // ok
+        } else {
+            panic!("Expected 14, got {:?}", f.block(b).insts[1]);
+        }
+    }
+}
