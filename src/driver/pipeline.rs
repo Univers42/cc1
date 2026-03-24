@@ -398,3 +398,103 @@ impl Driver {
         }
     }
 
+    // ── Target info ────────────────────────────────────────────────
+
+    /// Target triple string for build system probes.
+    pub fn target_triple(&self) -> &'static str {
+        match self.target {
+            Target::X86_64 => "x86_64-linux-gnu",
+            Target::I386 => "i686-linux-gnu",
+        }
+    }
+
+    // ── Run modes ──────────────────────────────────────────────────
+
+    /// -E: Preprocess only → stdout / file.
+    fn run_preprocess_only(&self) -> Result<(), String> {
+        for input in &self.input_files {
+            // For now, without a full preprocessor, we just read the source
+            // and output it. Assembly source with -x assembler-with-cpp is
+            // handled similarly.
+            let source = self.read_source_file(input)?;
+
+            let output = if self.suppress_line_markers {
+                super::file_types::strip_line_markers(&source)
+            } else {
+                source
+            };
+
+            if self.output_path_set {
+                std::fs::write(&self.output_path, &output)
+                    .map_err(|e| format!("cannot write to '{}': {}", self.output_path, e))?;
+            } else {
+                print!("{}", output);
+            }
+        }
+        Ok(())
+    }
+
+    /// -S: Compile to assembly → .s file.
+    fn run_assembly_only(&self) -> Result<(), String> {
+        for input in &self.input_files {
+            if !super::file_types::is_c_source(input)
+                && !matches!(self.explicit_language.as_deref(), Some("c"))
+            {
+                return Err(format!("cannot compile '{}' with -S (not a C source file)", input));
+            }
+
+            let asm = self.compile_to_assembly(input)?;
+
+            let out_path = if self.output_path_set {
+                self.output_path.clone()
+            } else {
+                derive_output_path(input, ".s")
+            };
+
+            std::fs::write(&out_path, &asm)
+                .map_err(|e| format!("cannot write to '{}': {}", out_path, e))?;
+
+            if self.verbose {
+                eprintln!("cc1: wrote assembly to '{}'", out_path);
+            }
+        }
+        Ok(())
+    }
+
+    /// -c: Compile + assemble → .o file.
+    fn run_object_only(&self) -> Result<(), String> {
+        for input in &self.input_files {
+            let obj_bytes = if super::file_types::is_assembly_source(input)
+                || super::file_types::is_explicit_assembly(self.explicit_language.as_deref())
+            {
+                // Assembly source → assemble directly.
+                self.assemble_source(input)?
+            } else if super::file_types::is_c_source(input)
+                || matches!(self.explicit_language.as_deref(), Some("c"))
+            {
+                // C source → compile to asm → assemble.
+                let asm = self.compile_to_assembly(input)?;
+                self.assemble_text(&asm)?
+            } else {
+                return Err(format!(
+                    "don't know what to do with '{}' (use -x to specify language)",
+                    input
+                ));
+            };
+
+            let out_path = if self.output_path_set {
+                self.output_path.clone()
+            } else {
+                derive_output_path(input, ".o")
+            };
+
+            std::fs::write(&out_path, &obj_bytes)
+                .map_err(|e| format!("cannot write to '{}': {}", out_path, e))?;
+
+            if self.verbose {
+                eprintln!("cc1: wrote object to '{}'", out_path);
+            }
+        }
+        Ok(())
+    }
+
