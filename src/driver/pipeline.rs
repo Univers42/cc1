@@ -848,3 +848,104 @@ impl Driver {
     }
 
     // ── Source file reading ────────────────────────────────────────
+
+    /// Read a source file, handling non-UTF-8 content by encoding raw bytes
+    /// as Private Use Area code points (U+E080-U+E0FF).
+    fn read_source_file(&self, path: &str) -> Result<String, String> {
+        let raw = std::fs::read(path)
+            .map_err(|e| format!("cannot read '{}': {}", path, e))?;
+
+        // Try UTF-8 first.
+        match String::from_utf8(raw.clone()) {
+            Ok(s) => Ok(s),
+            Err(_) => {
+                // Encode non-UTF-8 bytes as PUA code points.
+                let mut result = String::with_capacity(raw.len());
+                for &byte in &raw {
+                    if byte < 0x80 {
+                        result.push(byte as char);
+                    } else {
+                        // Map 0x80-0xFF → U+E080-U+E0FF
+                        let cp = 0xE000 + (byte as u32);
+                        if let Some(c) = char::from_u32(cp) {
+                            result.push(c);
+                        }
+                    }
+                }
+                Ok(result)
+            }
+        }
+    }
+
+    // ── Dependency file generation ─────────────────────────────────
+
+    /// Write a Make-compatible dependency file.
+    #[allow(dead_code)]
+    fn write_dep_file(&self, source: &str) -> Result<(), String> {
+        let dep_path = match &self.dep_file {
+            Some(p) => p.clone(),
+            None => {
+                // Derive from output path by replacing extension.
+                let base = if self.output_path_set {
+                    &self.output_path
+                } else {
+                    source
+                };
+                replace_extension(base, ".d")
+            }
+        };
+
+        let target = match &self.dep_target {
+            Some(t) => t.clone(),
+            None => {
+                let ext = match self.mode {
+                    CompileMode::AssemblyOnly => ".s",
+                    CompileMode::ObjectOnly => ".o",
+                    _ => ".o",
+                };
+                if self.output_path_set {
+                    self.output_path.clone()
+                } else {
+                    derive_output_path(source, ext)
+                }
+            }
+        };
+
+        let content = format!("{}: {}\n", target, source);
+        std::fs::write(&dep_path, &content)
+            .map_err(|e| format!("cannot write dependency file '{}': {}", dep_path, e))
+    }
+}
+
+// ── Utility functions ──────────────────────────────────────────────────
+
+/// Derive an output path by replacing the extension of the input path.
+fn derive_output_path(input: &str, new_ext: &str) -> String {
+    if let Some(dot) = input.rfind('.') {
+        format!("{}{}", &input[..dot], new_ext)
+    } else {
+        format!("{}{}", input, new_ext)
+    }
+}
+
+/// Derive a temporary object path from an input file.
+fn derive_temp_path(input: &str, ext: &str) -> String {
+    use std::process;
+    let base = std::path::Path::new(input)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("tmp");
+    format!("/tmp/cc1_{}_{}{}", base, process::id(), ext)
+}
+
+/// Replace the extension of a path.
+fn replace_extension(path: &str, new_ext: &str) -> String {
+    if let Some(dot) = path.rfind('.') {
+        format!("{}{}", &path[..dot], new_ext)
+    } else {
+        format!("{}{}", path, new_ext)
+    }
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────
+
