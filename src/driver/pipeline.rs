@@ -998,3 +998,26 @@ mod tests {
         assert!(opts.pic);
     }
 
+    #[test]
+    fn test_codegen_options_cfi_from_unwind() {
+        let mut d = Driver::new();
+        assert!(d.codegen_options().emit_cfi);
+        d.no_unwind_tables = true;
+        assert!(!d.codegen_options().emit_cfi);
+    }
+
+    #[test]
+    fn test_target_triple() {
+        let mut d = Driver::new();
+        d.target = Target::X86_64;
+        assert_eq!(d.target_triple(), "x86_64-linux-gnu");
+        d.target = Target::I386;
+        assert_eq!(d.target_triple(), "i686-linux-gnu");
+    }
+
+    #[test]
+    fn test_replace_extension() {
+        assert_eq!(replace_extension("foo.c", ".d"), "foo.d");
+        assert_eq!(replace_extension("a/b/c.o", ".d"), "a/b/c.d");
+    }
+}
