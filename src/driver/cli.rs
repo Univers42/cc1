@@ -198,3 +198,103 @@ pub fn parse_cli_args(driver: &mut Driver, argv0: &str, args: &[String]) -> Resu
             }
 
             // ── Target override ────────────────────────────────────
+
+            "-m32" => driver.target = Target::I386,
+            "-m64" => driver.target = Target::X86_64,
+            "-m16" => {
+                driver.target = Target::I386;
+                driver.code16gcc = true;
+            }
+
+            // ── Optimization ───────────────────────────────────────
+
+            "-O0" => {
+                driver.opt_level = 2; // Internal always 2
+                driver.optimize = false;
+                driver.optimize_size = false;
+            }
+            "-O1" | "-O" => {
+                driver.opt_level = 2;
+                driver.optimize = true;
+                driver.optimize_size = false;
+            }
+            "-O2" | "-O3" => {
+                driver.opt_level = 2;
+                driver.optimize = true;
+                driver.optimize_size = false;
+            }
+            "-Os" | "-Oz" => {
+                driver.opt_level = 2;
+                driver.optimize = true;
+                driver.optimize_size = true;
+            }
+
+            // ── Preprocessor defines / undefines ───────────────────
+
+            "-D" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("-D requires an argument".into());
+                }
+                driver.defines.push(parse_define(&args[i]));
+            }
+            a if a.starts_with("-D") => {
+                driver.defines.push(parse_define(&a[2..]));
+            }
+            "-U" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("-U requires an argument".into());
+                }
+                driver.undef_macros.push(args[i].clone());
+            }
+            a if a.starts_with("-U") => {
+                driver.undef_macros.push(a[2..].to_string());
+            }
+            "-undef" => driver.undef_all = true,
+
+            // ── Include paths ──────────────────────────────────────
+
+            "-I" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("-I requires an argument".into());
+                }
+                driver.include_paths.push(args[i].clone());
+            }
+            a if a.starts_with("-I") => {
+                driver.include_paths.push(a[2..].to_string());
+            }
+            "-iquote" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("-iquote requires an argument".into());
+                }
+                driver.quote_include_paths.push(args[i].clone());
+            }
+            "-isystem" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("-isystem requires an argument".into());
+                }
+                driver.isystem_include_paths.push(args[i].clone());
+            }
+            "-idirafter" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("-idirafter requires an argument".into());
+                }
+                driver.after_include_paths.push(args[i].clone());
+            }
+            "-include" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("-include requires an argument".into());
+                }
+                driver.force_includes.push(args[i].clone());
+            }
+            "-nostdinc" => driver.nostdinc = true,
+
+            // ── Language standard ──────────────────────────────────
+
+            a if a.starts_with("-std=") => {
