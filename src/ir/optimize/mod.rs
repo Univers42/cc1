@@ -440,3 +440,31 @@ fn gvn_licm_ivsr_shared(
     (gvn_changed, licm_changed, ivsr_changed)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::module::IrModule;
+
+    #[test]
+    fn test_optimize_empty_module() {
+        let mut module = IrModule::new("test");
+        optimize(&mut module, Target::X86_64);
+        assert!(module.functions.is_empty());
+    }
+
+    #[test]
+    fn test_disabled_passes() {
+        // Clearing the env var for safety
+        std::env::remove_var("CCC_DISABLE_PASSES");
+        let d = disabled_passes();
+        assert!(d.is_empty());
+    }
+
+    #[test]
+    fn test_pass_changes_first_iter() {
+        let p = PassChanges::new_first_iter();
+        // All fields should be usize::MAX
+        assert_eq!(p.cfg_simplify1, usize::MAX);
+        assert_eq!(p.gvn, usize::MAX);
+    }
+}
