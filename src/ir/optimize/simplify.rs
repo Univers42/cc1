@@ -263,3 +263,73 @@ fn const_i64(op: &Operand) -> Option<i64> {
 }
 
 fn const_u64(op: &Operand) -> Option<u64> {
+    match op {
+        Operand::Const(c) => match c {
+            ConstValue::I8(v) => Some(*v as u8 as u64),
+            ConstValue::I16(v) => Some(*v as u16 as u64),
+            ConstValue::I32(v) => Some(*v as u32 as u64),
+            ConstValue::I64(v) => Some(*v as u64),
+            ConstValue::U8(v) => Some(*v as u64),
+            ConstValue::U16(v) => Some(*v as u64),
+            ConstValue::U32(v) => Some(*v as u64),
+            ConstValue::U64(v) => Some(*v),
+            ConstValue::NullPtr => Some(0),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn const_f64(op: &Operand) -> Option<f64> {
+    match op {
+        Operand::Const(ConstValue::F32(v)) => Some(*v as f64),
+        Operand::Const(ConstValue::F64(v)) => Some(*v),
+        _ => None,
+    }
+}
+
+fn zero_const(ty: &IrType) -> Operand {
+    let c = match ty {
+        IrType::I8 => ConstValue::I8(0),
+        IrType::I16 => ConstValue::I16(0),
+        IrType::I32 => ConstValue::I32(0),
+        IrType::I64 => ConstValue::I64(0),
+        IrType::U8 => ConstValue::U8(0),
+        IrType::U16 => ConstValue::U16(0),
+        IrType::U32 => ConstValue::U32(0),
+        IrType::U64 => ConstValue::U64(0),
+        IrType::Ptr => ConstValue::NullPtr,
+        _ => ConstValue::I32(0),
+    };
+    Operand::Const(c)
+}
+
+fn one_const(ty: &IrType) -> Operand {
+    let c = match ty {
+        IrType::I8 => ConstValue::I8(1),
+        IrType::I16 => ConstValue::I16(1),
+        IrType::I32 => ConstValue::I32(1),
+        IrType::I64 => ConstValue::I64(1),
+        IrType::U8 => ConstValue::U8(1),
+        IrType::U16 => ConstValue::U16(1),
+        IrType::U32 => ConstValue::U32(1),
+        IrType::U64 => ConstValue::U64(1),
+        _ => ConstValue::I32(1),
+    };
+    Operand::Const(c)
+}
+
+fn is_all_ones(op: &Operand, ty: &IrType) -> bool {
+    if let Some(v) = const_u64(op) {
+        let bits = ty.bit_width();
+        if bits == 0 || bits > 64 {
+            return false;
+        }
+        let mask = if bits == 64 { u64::MAX } else { (1u64 << bits) - 1 };
+        v & mask == mask
+    } else {
+        false
+    }
+}
+
+#[cfg(test)]
