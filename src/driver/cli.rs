@@ -298,3 +298,103 @@ pub fn parse_cli_args(driver: &mut Driver, argv0: &str, args: &[String]) -> Resu
             // ── Language standard ──────────────────────────────────
 
             a if a.starts_with("-std=") => {
+                let std = &a[5..];
+                parse_std_flag(driver, std);
+            }
+
+            // ── Preprocessor output control ────────────────────────
+
+            "-P" => driver.suppress_line_markers = true,
+            "-dM" => driver.dump_defines = true,
+
+            // ── Language override ───────────────────────────────────
+
+            "-x" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("-x requires an argument".into());
+                }
+                let lang = args[i].clone();
+                if lang == "none" {
+                    driver.explicit_language = None;
+                } else {
+                    driver.explicit_language = Some(lang);
+                }
+            }
+
+            // ── Debug info ─────────────────────────────────────────
+
+            "-g" | "-g1" | "-g2" | "-g3" | "-gdwarf" | "-gdwarf-2" |
+            "-gdwarf-3" | "-gdwarf-4" | "-gdwarf-5" | "-ggdb" | "-ggdb3" => {
+                driver.debug_info = true;
+            }
+            "-g0" => driver.debug_info = false,
+
+            // ── Warning flags ──────────────────────────────────────
+
+            "-w" => driver.warning_config.suppress_all = true,
+            "-Wall" => driver.warning_config.all = true,
+            "-Wextra" => driver.warning_config.extra = true,
+            "-Werror" => driver.warning_config.error = true,
+            "-Wpedantic" | "-pedantic" => driver.warning_config.pedantic = true,
+            "-pedantic-errors" => {
+                driver.warning_config.pedantic = true;
+                driver.warning_config.error = true;
+            }
+            a if a.starts_with("-Werror=") => {
+                driver.warning_config.error_flags.push(a[8..].to_string());
+            }
+            a if a.starts_with("-Wno-") => {
+                driver.warning_config.disabled_flags.push(a[5..].to_string());
+            }
+            a if a.starts_with("-W") && !a.starts_with("-Wl,") && !a.starts_with("-Wp,") && !a.starts_with("-Wa,") => {
+                // -W<flag> — enable specific warning.
+                let flag = &a[2..];
+                if !flag.is_empty() {
+                    driver.warning_config.enabled_flags.push(flag.to_string());
+                }
+            }
+
+            // ── Diagnostic color mode ──────────────────────────────
+
+            "-fdiagnostics-color=auto" | "-fdiagnostics-color" => {
+                driver.color_mode = ColorMode::Auto;
+            }
+            "-fdiagnostics-color=always" => driver.color_mode = ColorMode::Always,
+            "-fdiagnostics-color=never" | "-fno-diagnostics-color" => {
+                driver.color_mode = ColorMode::Never;
+            }
+
+            // ── PIC ────────────────────────────────────────────────
+
+            "-fPIC" | "-fpic" => driver.pic = true,
+            "-fno-PIC" | "-fno-pic" => driver.pic = false,
+
+            // ── Code generation flags ──────────────────────────────
+
+            "-mfunction-return=thunk-extern" => driver.function_return_thunk = true,
+            "-mindirect-branch=thunk-extern" => driver.indirect_branch_thunk = true,
+
+            a if a.starts_with("-fpatchable-function-entry=") => {
+                let val = &a["-fpatchable-function-entry=".len()..];
+                driver.patchable_function_entry = parse_patchable_entry(val);
+            }
+
+            "-fcf-protection=branch" | "-fcf-protection" => {
+                driver.cf_protection_branch = true;
+            }
+            "-fcf-protection=none" => driver.cf_protection_branch = false,
+
+            "-mno-sse" => driver.no_sse = true,
+            "-msse3" => {
+                driver.enable_sse3 = true;
+            }
+            "-mssse3" => {
+                driver.enable_sse3 = true;
+                driver.enable_ssse3 = true;
+            }
+            "-msse4.1" => {
+                driver.enable_sse3 = true;
+                driver.enable_ssse3 = true;
+                driver.enable_sse4_1 = true;
+            }
