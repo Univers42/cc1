@@ -295,3 +295,137 @@ fn replace_value_in_terminator(term: &mut Terminator, old: ValueId, new_op: &Ope
     });
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::module::{IrFunction, IrModule};
+
+    #[test]
+    fn test_constant_return_propagation() {
+        let mut module = IrModule::new("test");
+
+        // callee: always returns 42
+        let mut callee = IrFunction::new("callee", IrType::I32, Linkage::Internal);
+        let b = callee.create_block("entry");
+        callee.block_mut(b).set_terminator(Terminator::Ret {
+            value: Some(Operand::Const(ConstValue::I32(42))),
+        });
+        module.functions.push(callee);
+
+        // caller: calls callee
+        let mut caller = IrFunction::new("caller", IrType::I32, Linkage::External);
+        let b2 = caller.create_block("entry");
+        let v = caller.alloc_value();
+        caller.block_mut(b2).push(Instruction::Call {
+            result: v,
+            callee: "callee".to_string(),
+            args: vec![],
+            ret_ty: IrType::I32,
+            is_variadic: false,
+        });
+        caller.block_mut(b2).set_terminator(Terminator::Ret {
+            value: Some(Operand::Value(v)),
+        });
+        module.functions.push(caller);
+
+        let changed = constant_return_propagation(&mut module);
+        assert!(changed);
+
+        // The call should be replaced with a copy of 42.
+        let caller_fn = &module.functions[1];
+        let inst = &caller_fn.blocks[0].insts[0];
+        match inst {
+            Instruction::Copy { src: Operand::Const(ConstValue::I32(42)), .. } => {}
+            other => panic!("Expected Copy of 42, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_dead_call_elimination() {
+        let mut module = IrModule::new("test");
+
+        // pure function
+        let mut callee = IrFunction::new("pure_fn", IrType::I32, Linkage::Internal);
+        let b = callee.create_block("entry");
+        let val = callee.alloc_value();
+        callee.block_mut(b).push(Instruction::BinOp {
+            result: val,
+            op: BinOpKind::Add,
+            lhs: Operand::Const(ConstValue::I32(1)),
+            rhs: Operand::Const(ConstValue::I32(2)),
+            ty: IrType::I32,
+        });
+        callee.block_mut(b).set_terminator(Terminator::Ret {
+            value: Some(Operand::Value(val)),
+        });
+        module.functions.push(callee);
+
+        // caller: calls pure_fn but ignores result
+        let mut caller = IrFunction::new("caller", IrType::Void, Linkage::External);
+        let b2 = caller.create_block("entry");
+        let unused = caller.alloc_value();
+        caller.block_mut(b2).push(Instruction::Call {
+            result: unused,
+            callee: "pure_fn".to_string(),
+            args: vec![],
+            ret_ty: IrType::I32,
+            is_variadic: false,
+        });
+        caller.block_mut(b2).set_terminator(Terminator::Ret { value: None });
+        module.functions.push(caller);
+
+        let changed = dead_call_elimination(&mut module);
+        assert!(changed);
+        assert!(module.functions[1].blocks[0].insts.is_empty());
+    }
+
+    #[test]
+    fn test_constant_argument_propagation() {
+        let mut module = IrModule::new("test");
+
+        // callee with one param
+        let mut callee = IrFunction::new("callee", IrType::I32, Linkage::Internal);
+        let b = callee.create_block("entry");
+        let param = callee.alloc_value();
+        callee.params.push(crate::ir::module::IrParam { name: "x".to_string(), value: param, ty: IrType::I32 });
+        let res = callee.alloc_value();
+        callee.block_mut(b).push(Instruction::BinOp {
+            result: res,
+            op: BinOpKind::Add,
+            lhs: Operand::Value(param),
+            rhs: Operand::Const(ConstValue::I32(1)),
+            ty: IrType::I32,
+        });
+        callee.block_mut(b).set_terminator(Terminator::Ret {
+            value: Some(Operand::Value(res)),
+        });
+        module.functions.push(callee);
+
+        // caller: always passes 10
+        let mut caller = IrFunction::new("caller", IrType::I32, Linkage::External);
+        let b2 = caller.create_block("entry");
+        let v = caller.alloc_value();
+        caller.block_mut(b2).push(Instruction::Call {
+            result: v,
+            callee: "callee".to_string(),
+            args: vec![(Operand::Const(ConstValue::I32(10)), IrType::I32)],
+            ret_ty: IrType::I32,
+            is_variadic: false,
+        });
+        caller.block_mut(b2).set_terminator(Terminator::Ret {
+            value: Some(Operand::Value(v)),
+        });
+        module.functions.push(caller);
+
+        let changed = constant_argument_propagation(&mut module);
+        assert!(changed);
+
+        // Check that callee's BinOp now uses const 10 instead of param value.
+        let callee_fn = &module.functions[0];
+        let inst = &callee_fn.blocks[0].insts[0];
+        match inst {
+            Instruction::BinOp { lhs: Operand::Const(ConstValue::I32(10)), .. } => {}
+            other => panic!("Expected BinOp with const 10, got {:?}", other),
+        }
+    }
+}
