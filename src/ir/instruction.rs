@@ -387,6 +387,59 @@ impl Instruction {
             }
         });
     }
+
+    /// Iterate over operands mutably, allowing in-place replacement.
+    pub fn for_each_operand_mut<F: FnMut(&mut Operand)>(&mut self, mut f: F) {
+        match self {
+            Instruction::Alloca { .. } | Instruction::Nop => {}
+            Instruction::DynAlloca { count, .. } => f(count),
+            Instruction::Store { addr, value, .. } => {
+                f(addr);
+                f(value);
+            }
+            Instruction::Load { addr, .. } => f(addr),
+            Instruction::BinOp { lhs, rhs, .. } => {
+                f(lhs);
+                f(rhs);
+            }
+            Instruction::UnaryOp { operand, .. } => f(operand),
+            Instruction::Icmp { lhs, rhs, .. } | Instruction::Fcmp { lhs, rhs, .. } => {
+                f(lhs);
+                f(rhs);
+            }
+            Instruction::Cast { src, .. } => f(src),
+            Instruction::Call { args, .. } => {
+                for (op, _) in args {
+                    f(op);
+                }
+            }
+            Instruction::CallIndirect {
+                func_ptr, args, ..
+            } => {
+                f(func_ptr);
+                for (op, _) in args {
+                    f(op);
+                }
+            }
+            Instruction::GetElementPtr { base, offset, .. } => {
+                f(base);
+                f(offset);
+            }
+            Instruction::GlobalAddr { .. } | Instruction::LabelAddr { .. } => {}
+            Instruction::Select {
+                cond,
+                true_val,
+                false_val,
+                ..
+            } => {
+                f(cond);
+                f(true_val);
+                f(false_val);
+            }
+            Instruction::Copy { src, .. } => f(src),
+            Instruction::Phi { incoming, .. } => {
+                for (_, op) in incoming {
+    }
 }
 
 impl Terminator {
