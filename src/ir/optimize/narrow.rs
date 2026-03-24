@@ -367,3 +367,38 @@ fn truncate_to(c: &ConstValue, ty: &IrType) -> Option<ConstValue> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::instruction::Terminator;
+    use crate::ir::module::IrFunction;
+
+    #[test]
+    fn test_narrow_pass_no_crash() {
+        let mut f = IrFunction::new("test", IrType::I32, Linkage::External);
+        let b = f.create_block("entry");
+        let v = f.alloc_value();
+        f.block_mut(b).push(Instruction::BinOp {
+            result: v,
+            op: BinOpKind::Add,
+            lhs: Operand::Const(ConstValue::I32(1)),
+            rhs: Operand::Const(ConstValue::I32(2)),
+            ty: IrType::I32,
+        });
+        f.block_mut(b).set_terminator(Terminator::Ret {
+            value: Some(Operand::Value(v)),
+        });
+
+        // Shouldn't crash, may or may not make changes.
+        let _ = narrow(&mut f);
+    }
+
+    #[test]
+    fn test_type_bits() {
+        assert_eq!(type_bits(&IrType::I8), 8);
+        assert_eq!(type_bits(&IrType::I16), 16);
+        assert_eq!(type_bits(&IrType::I32), 32);
+        assert_eq!(type_bits(&IrType::I64), 64);
+        assert_eq!(type_bits(&IrType::U8), 8);
+    }
+}
