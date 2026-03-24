@@ -758,3 +758,93 @@ impl Driver {
         };
 
         let asm = generate_asm(arch_codegen.as_ref(), &ir_module, self.target);
+
+        if time_phases {
+            eprintln!(
+                "[TIME] codegen: {:.3}s ({} bytes asm)",
+                phase_start.elapsed().as_secs_f64(),
+                asm.len()
+            );
+        }
+
+        // Emit warnings if any.
+        if diag.has_warnings() {
+            diag.emit_all(&source_map);
+        }
+
+        if time_phases {
+            eprintln!(
+                "[TIME] total compile {}: {:.3}s",
+                input_path,
+                total_start.elapsed().as_secs_f64()
+            );
+        }
+
+        Ok(asm)
+    }
+
+    // ── Assembly helpers ───────────────────────────────────────────
+
+    /// Assemble an assembly source file (.s/.S) to ELF .o bytes.
+    fn assemble_source(&self, path: &str) -> Result<Vec<u8>, String> {
+        let source = if super::file_types::is_assembly_with_cpp(path) {
+            // .S files need C preprocessing first.
+            // TODO: Run the built-in C preprocessor with __ASSEMBLER__ defined.
+            // For now, we just read the file directly.
+            self.read_source_file(path)?
+        } else {
+            std::fs::read_to_string(path)
+                .map_err(|e| format!("cannot read '{}': {}", path, e))?
+        };
+        self.assemble_text(&source)
+    }
+
+    /// Assemble AT&T syntax assembly text to ELF .o bytes using the builtin assembler.
+    fn assemble_text(&self, asm_text: &str) -> Result<Vec<u8>, String> {
+        match self.target {
+            Target::X86_64 => {
+                use crate::backend::native::x86_64::assembler::X86_64Assembler;
+                let mut assembler = X86_64Assembler::new();
+                Ok(assembler.assemble(asm_text))
+            }
+            Target::I386 => {
+                Err("i386 builtin assembler not yet implemented".into())
+            }
+        }
+    }
+
+    /// Generate the _start stub that calls main and exits via syscall.
+    fn generate_start_stub(&self) -> String {
+        match self.target {
+            Target::X86_64 => {
+                concat!(
+                    "        .text\n",
+                    "        .globl  _start\n",
+                    "        .type   _start, @function\n",
+                    "_start:\n",
+                    "        xorl    %ebp, %ebp\n",
+                    "        call    main\n",
+                    "        movl    %eax, %edi\n",
+                    "        movl    $60, %eax\n",
+                    "        syscall\n",
+                    "        .size   _start, .-_start\n",
+                ).to_string()
+            }
+            Target::I386 => {
+                concat!(
+                    "        .text\n",
+                    "        .globl  _start\n",
+                    "        .type   _start, @function\n",
+                    "_start:\n",
+                    "        xorl    %ebp, %ebp\n",
+                    "        call    main\n",
+                    "        movl    %eax, %ebx\n",
+                    "        movl    $1, %eax\n",
+                    "        int     $0x80\n",
+                    "        .size   _start, .-_start\n",
+                ).to_string()
+            }
+        }
+    }
+
+    // ── Source file reading ────────────────────────────────────────
