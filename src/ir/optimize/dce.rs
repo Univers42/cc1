@@ -111,3 +111,79 @@ pub fn dce(func: &mut IrFunction) -> bool {
     true
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::instruction::Terminator;
+
+    #[test]
+    fn test_dce_unused() {
+        let mut f = IrFunction::new("test", IrType::I32, Linkage::External);
+        let b = f.create_block("entry");
+
+        let v0 = f.alloc_value(); // used
+        let v1 = f.alloc_value(); // unused (dead)
+
+        f.block_mut(b).push(Instruction::BinOp {
+            result: v0,
+            op: BinOpKind::Add,
+            lhs: Operand::Const(ConstValue::I32(1)),
+            rhs: Operand::Const(ConstValue::I32(2)),
+            ty: IrType::I32,
+        });
+        f.block_mut(b).push(Instruction::BinOp {
+            result: v1,
+            op: BinOpKind::Mul,
+            lhs: Operand::Const(ConstValue::I32(3)),
+            rhs: Operand::Const(ConstValue::I32(4)),
+            ty: IrType::I32,
+        });
+        f.block_mut(b).set_terminator(Terminator::Ret {
+            value: Some(Operand::Value(v0)),
+        });
+
+        assert!(dce(&mut f));
+        // Only v0's instruction should remain
+        assert_eq!(f.block(b).insts.len(), 1);
+    }
+
+    #[test]
+    fn test_dce_chain() {
+        let mut f = IrFunction::new("test", IrType::I32, Linkage::External);
+        let b = f.create_block("entry");
+
+        let v0 = f.alloc_value(); // dead
+        let v1 = f.alloc_value(); // dead (uses v0)
+        let v2 = f.alloc_value(); // live
+
+        f.block_mut(b).push(Instruction::BinOp {
+            result: v0,
+            op: BinOpKind::Add,
+            lhs: Operand::Const(ConstValue::I32(1)),
+            rhs: Operand::Const(ConstValue::I32(2)),
+            ty: IrType::I32,
+        });
+        f.block_mut(b).push(Instruction::BinOp {
+            result: v1,
+            op: BinOpKind::Mul,
+            lhs: Operand::Value(v0),
+            rhs: Operand::Const(ConstValue::I32(3)),
+            ty: IrType::I32,
+        });
+        f.block_mut(b).push(Instruction::BinOp {
+            result: v2,
+            op: BinOpKind::Add,
+            lhs: Operand::Const(ConstValue::I32(42)),
+            rhs: Operand::Const(ConstValue::I32(0)),
+            ty: IrType::I32,
+        });
+        f.block_mut(b).set_terminator(Terminator::Ret {
+            value: Some(Operand::Value(v2)),
+        });
+
+        assert!(dce(&mut f));
+        // Only v2's instruction should remain (v0 and v1 are dead chain)
+        assert_eq!(f.block(b).insts.len(), 1);
+    }
+
+    #[test]
