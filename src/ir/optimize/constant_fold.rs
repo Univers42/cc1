@@ -473,3 +473,75 @@ fn fold_cast(kind: CastKind, val: &ConstValue, src_ty: &IrType, dst_ty: &IrType)
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::instruction::Terminator;
+
+    #[test]
+    fn test_fold_add() {
+        let mut f = IrFunction::new("test", IrType::I32, Linkage::External);
+        let b = f.create_block("entry");
+        let v0 = f.alloc_value();
+        f.block_mut(b).push(Instruction::BinOp {
+            result: v0,
+            op: BinOpKind::Add,
+            lhs: Operand::Const(ConstValue::I32(3)),
+            rhs: Operand::Const(ConstValue::I32(4)),
+            ty: IrType::I32,
+        });
+        f.block_mut(b).set_terminator(Terminator::Ret {
+            value: Some(Operand::Value(v0)),
+        });
+
+        assert!(constant_fold(&mut f));
+        // Should be replaced with Copy of const 7
+        if let Instruction::Copy { src: Operand::Const(ConstValue::I32(7)), .. } = &f.block(b).insts[0] {
+            // ok
+        } else {
+            panic!("Expected Copy of 7, got {:?}", f.block(b).insts[0]);
+        }
+    }
+
+    #[test]
+    fn test_fold_div_by_zero() {
+        let result = fold_binop(
+            BinOpKind::SDiv,
+            &ConstValue::I32(10),
+            &ConstValue::I32(0),
+            &IrType::I32,
+        );
+        assert!(result.is_none()); // Should not fold div by zero
+    }
+
+    #[test]
+    fn test_fold_comparison() {
+        let result = fold_icmp(
+            IcmpPred::Slt,
+            &ConstValue::I32(3),
+            &ConstValue::I32(5),
+            &IrType::I32,
+        );
+        assert_eq!(result, Some(ConstValue::I8(1)));
+    }
+
+    #[test]
+    fn test_fold_condbr() {
+        let mut f = IrFunction::new("test", IrType::Void, Linkage::External);
+        let b0 = f.create_block("entry");
+        let b1 = f.create_block("then");
+        let b2 = f.create_block("else");
+
+        f.block_mut(b0).set_terminator(Terminator::CondBr {
+            cond: Operand::Const(ConstValue::I8(1)),
+            true_bb: b1,
+            false_bb: b2,
+        });
+        f.block_mut(b1).set_terminator(Terminator::Ret { value: None });
+        f.block_mut(b2).set_terminator(Terminator::Ret { value: None });
+
+        assert!(constant_fold(&mut f));
+        assert!(matches!(f.block(b0).terminator, Terminator::Br { target } if target == b1));
+    }
+
+    #[test]
