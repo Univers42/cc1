@@ -498,3 +498,146 @@ pub fn parse_cli_args(driver: &mut Driver, argv0: &str, args: &[String]) -> Resu
                     match parts[j] {
                         "-MMD" | "-MD" => {
                             if j + 1 < parts.len() {
+                                driver.dep_file = Some(parts[j + 1].to_string());
+                                j += 1;
+                            }
+                        }
+                        _ => {} // Silently ignore other -Wp flags
+                    }
+                    j += 1;
+                }
+            }
+
+            // ── Assembler pass-through ─────────────────────────────
+
+            a if a.starts_with("-Wa,") => {
+                let items = &a[4..];
+                // Check for --version probe.
+                if items == "--version" {
+                    println!("GNU assembler (Claude's C Compiler built-in) 2.42");
+                    return Ok(true);
+                }
+                for part in items.split(',') {
+                    if !part.is_empty() {
+                        driver.assembler_extra_args.push(part.to_string());
+                    }
+                }
+            }
+
+            // ── Dependency generation ──────────────────────────────
+
+            "-M" | "-MM" => driver.dep_only = true,
+            "-MD" | "-MMD" => {
+                // -MD/-MMD: derive .d path from output, don't stop compilation.
+                // The dep file path is derived later in the pipeline.
+            }
+            "-MF" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("-MF requires an argument".into());
+                }
+                driver.dep_file = Some(args[i].clone());
+            }
+            "-MT" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("-MT requires an argument".into());
+                }
+                driver.dep_target = Some(args[i].clone());
+            }
+            "-MQ" => {
+                // -MQ is like -MT but escapes special make chars.
+                i += 1;
+                if i >= args.len() {
+                    return Err("-MQ requires an argument".into());
+                }
+                driver.dep_target = Some(escape_make_target(&args[i]));
+            }
+
+            // ── Thread flags ───────────────────────────────────────
+
+            "-pthread" => driver.pthread = true,
+
+            // ── Pipe (silently ignored) ────────────────────────────
+
+            "-pipe" => {}
+
+            // ── Silently ignored -f flags ──────────────────────────
+            // Build systems pass many GCC-specific flags we don't need.
+
+            a if a.starts_with("-fno-") && is_ignorable_f_flag(&a[5..]) => {}
+            a if a.starts_with("-f") && is_ignorable_f_flag(&a[2..]) => {}
+
+            // ── Silently ignored -m flags ──────────────────────────
+
+            a if a.starts_with("-mno-") && is_ignorable_m_flag(&a[5..]) => {}
+            a if a.starts_with("-m") && is_ignorable_m_flag(&a[2..]) => {}
+
+            // ── Silently ignored misc flags ────────────────────────
+
+            "-Qunused-arguments" | "-no-canonical-prefixes" | "--param" => {
+                // --param takes an argument
+                if arg == "--param" {
+                    i += 1; // skip the param value
+                }
+            }
+            a if a.starts_with("--param=") => {} // --param=name=value
+            a if a.starts_with("-fstack-protector") => {}
+            a if a.starts_with("-fvisibility") => {}
+            a if a.starts_with("-fno-stack-protector") => {}
+            "-fno-strict-aliasing" | "-fstrict-aliasing" => {}
+            "-fno-delete-null-pointer-checks" => {}
+            "-fno-strict-overflow" | "-fstrict-overflow" => {}
+            "-fno-allow-store-data-races" => {}
+            "-fno-tree-loop-im" | "-fno-tree-loop-ivcanon" => {}
+            "-fasan-shadow-offset" => { i += 1; } // takes arg
+            "-fsanitize-coverage" | "-fprofile-arcs" | "-ftest-coverage" => {}
+            a if a.starts_with("-fsanitize") => {}
+            a if a.starts_with("-fprofile") => {}
+            a if a.starts_with("-fno-sanitize") => {}
+            a if a.starts_with("-fno-profile") => {}
+            a if a.starts_with("-fdebug-prefix-map") => {}
+            a if a.starts_with("-fmacro-prefix-map") => {}
+            a if a.starts_with("-ffile-prefix-map") => {}
+
+            // ── Ignored linker-related ─────────────────────────────
+
+            "-rdynamic" => {}
+            a if a.starts_with("-Tbss") || a.starts_with("-Ttext") || a.starts_with("-Tdata") => {}
+            a if a.starts_with("-T") && a.len() > 2 => {
+                // -T<script> linker script
+                driver.linker_ordered_items.push(a.to_string());
+            }
+
+            // ── Unrecognized flags ─────────────────────────────────
+
+            a if a.starts_with('-') => {
+                // Silently ignore unknown flags in non-verbose mode.
+                // This matches GCC behavior and is critical for build system compat.
+                if driver.verbose {
+                    eprintln!("cc1: note: ignoring unknown flag: {}", a);
+                }
+            }
+
+            // ── Input files ────────────────────────────────────────
+
+            _ => {
+                let path = arg.clone();
+                // If it's an object/archive or detected binary, add to linker items
+                // at the current position for correct ordering.
+                if super::file_types::is_object_or_archive(&path) {
+                    driver.linker_ordered_items.push(path.clone());
+                }
+                driver.input_files.push(path);
+            }
+        }
+
+        i += 1;
+    }
+
+    Ok(false)
+}
+
+// ── Helper functions ───────────────────────────────────────────────────
+
+/// Parse a -D argument into a CliDefine.
