@@ -208,3 +208,123 @@ fn inline_call_site(
     let merge_bid = caller.create_block("inline.merge");
 
     // Clone and remap callee blocks.
+    let mut cloned_blocks = Vec::new();
+    for block in &callee.blocks {
+        let new_bid = caller.create_block(&format!("inline.{}", block.label));
+        let nb = caller.block_mut(new_bid);
+
+        // Remap instructions
+        for inst in &block.insts {
+            let new_inst = remap_instruction(inst, &remap_operand, &remap_value, &remap_block);
+            nb.insts.push(new_inst);
+        }
+
+        // Remap terminator
+        nb.terminator = match &block.terminator {
+            Terminator::Ret { value } => {
+                // Return → branch to merge block
+                Terminator::Br { target: merge_bid }
+            }
+            Terminator::Br { target } => {
+                Terminator::Br { target: remap_block(*target) }
+            }
+            Terminator::CondBr { cond, true_bb, false_bb } => {
+                Terminator::CondBr {
+                    cond: remap_operand(cond),
+                    true_bb: remap_block(*true_bb),
+                    false_bb: remap_block(*false_bb),
+                }
+            }
+            Terminator::Switch { discr, ty, default, cases } => {
+                Terminator::Switch {
+                    discr: remap_operand(discr),
+                    ty: ty.clone(),
+                    default: remap_block(*default),
+                    cases: cases.iter().map(|(v, b)| (*v, remap_block(*b))).collect(),
+                }
+            }
+            other => other.clone(),
+        };
+
+        cloned_blocks.push(new_bid);
+    }
+
+    // Wire arguments: insert stores for each parameter's alloca.
+    // For simplicity, we create Copy instructions from args to param values.
+    let callee_entry = if !cloned_blocks.is_empty() {
+        cloned_blocks[0]
+    } else {
+        return false;
+    };
+
+    // Insert argument copies at the beginning of the callee entry
+    let mut arg_copies = Vec::new();
+    for (i, param) in callee.params.iter().enumerate() {
+        if i < call_args.len() {
+            let remapped_param = remap_value(param.value);
+            arg_copies.push(Instruction::Copy {
+                result: remapped_param,
+                src: call_args[i].0.clone(),
+            });
+        }
+    }
+    // Prepend to callee entry
+    let entry_insts = &mut caller.block_mut(callee_entry).insts;
+    let old_insts = std::mem::take(entry_insts);
+    *entry_insts = arg_copies;
+    entry_insts.extend(old_insts);
+
+    // Handle return value: collect return values for phi in merge block.
+    let mut return_values: Vec<(BlockId, Operand)> = Vec::new();
+    for (i, block) in callee.blocks.iter().enumerate() {
+        if let Terminator::Ret { value } = &block.terminator {
+            let from_block = cloned_blocks[i];
+            let ret_op = match value {
+                Some(op) => remap_operand(op),
+                None => Operand::Const(ConstValue::Undef),
+            };
+            return_values.push((from_block, ret_op));
+        }
+    }
+
+    // Create phi or copy for return value in merge block.
+    if !call_ret_ty.is_void() && !return_values.is_empty() {
+        let ret_val = if return_values.len() == 1 {
+            Instruction::Copy {
+                result: call_result,
+                src: return_values[0].1.clone(),
+            }
+        } else {
+            Instruction::Phi {
+                result: call_result,
+                ty: call_ret_ty.clone(),
+                incoming: return_values,
+            }
+        };
+        caller.block_mut(merge_bid).insts.push(ret_val);
+    }
+
+    // Split the caller block at the call site.
+    // Instructions after the call go into the merge block.
+    let split_idx = call_bi.min(caller.blocks.len() - 1);
+    let after_call = caller.blocks[split_idx]
+        .insts
+        .split_off(call_ii + 1);
+    let old_term = caller.blocks[call_bi].terminator.clone();
+    caller.block_mut(merge_bid).insts.extend(after_call);
+    caller.block_mut(merge_bid).terminator = old_term;
+
+    // Replace the call instruction with a branch to the callee entry.
+    caller.blocks[call_bi].insts.truncate(call_ii);
+    caller.blocks[call_bi].terminator = Terminator::Br { target: callee_entry };
+
+    // Bump the value counter to account for cloned values.
+    let max_callee_value = callee.value_count();
+    for _ in 0..(max_callee_value + callee.params.len() as u32 + 1) {
+        caller.alloc_value();
+    }
+
+    true
+}
+
+/// Remap an instruction's values and blocks.
