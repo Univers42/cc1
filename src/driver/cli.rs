@@ -891,3 +891,86 @@ mod tests {
 
     #[test]
     fn test_warning_flags() {
+        let (d, _) = parse(&["-Wall", "-Wextra", "-Werror", "test.c"]);
+        assert!(d.warning_config.all);
+        assert!(d.warning_config.extra);
+        assert!(d.warning_config.error);
+
+        let (d, _) = parse(&["-w", "test.c"]);
+        assert!(d.warning_config.suppress_all);
+    }
+
+    #[test]
+    fn test_std_flag() {
+        let (d, _) = parse(&["-std=c89", "test.c"]);
+        assert!(!d.gnu_extensions);
+        assert!(d.gnu89_inline);
+
+        let (d, _) = parse(&["-std=gnu99", "test.c"]);
+        assert!(d.gnu_extensions);
+        assert!(!d.gnu89_inline);
+
+        let (d, _) = parse(&["-std=gnu89", "test.c"]);
+        assert!(d.gnu_extensions);
+        assert!(d.gnu89_inline);
+    }
+
+    #[test]
+    fn test_simd_implication_chain() {
+        let (d, _) = parse(&["-mavx2", "test.c"]);
+        assert!(d.enable_avx2);
+        assert!(d.enable_avx);
+        assert!(d.enable_sse4_2);
+        assert!(d.enable_sse4_1);
+        assert!(d.enable_ssse3);
+        assert!(d.enable_sse3);
+    }
+
+    #[test]
+    fn test_linker_items_ordering() {
+        let (d, _) = parse(&[
+            "a.c", "-lfoo", "-Wl,--whole-archive", "lib.a", "-lbar",
+        ]);
+        // -l flags and -Wl, flags in order
+        assert!(d.linker_ordered_items.contains(&"-lfoo".to_string()));
+        assert!(d.linker_ordered_items.contains(&"-lbar".to_string()));
+    }
+
+    #[test]
+    fn test_pic_flags() {
+        let (d, _) = parse(&["-fPIC", "test.c"]);
+        assert!(d.pic);
+
+        let (d, _) = parse(&["-fPIC", "-fno-PIC", "test.c"]);
+        assert!(!d.pic);
+    }
+
+    #[test]
+    fn test_debug_flags() {
+        let (d, _) = parse(&["-g", "test.c"]);
+        assert!(d.debug_info);
+
+        let (d, _) = parse(&["-g0", "test.c"]);
+        assert!(!d.debug_info);
+    }
+
+    #[test]
+    fn test_multiple_input_files() {
+        let (d, _) = parse(&["a.c", "b.c", "c.o"]);
+        assert_eq!(d.input_files.len(), 3);
+    }
+
+    #[test]
+    fn test_unknown_flags_silently_ignored() {
+        // Should not error — matches GCC behavior.
+        let (_, early) = parse(&["-funknown-flag", "-munknown-flag", "test.c"]);
+        assert!(!early);
+    }
+
+    #[test]
+    fn test_o_requires_argument() {
+        let err = parse_err(&["-o"]);
+        assert!(err.contains("-o requires"));
+    }
+
+    #[test]
