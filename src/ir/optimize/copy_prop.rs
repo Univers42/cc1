@@ -143,3 +143,127 @@ pub fn copy_prop(func: &mut IrFunction) -> bool {
     changed
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::instruction::Terminator;
+
+    #[test]
+    fn test_copy_prop_basic() {
+        let mut f = IrFunction::new("test", IrType::I32, Linkage::External);
+        let b0 = f.create_block("entry");
+
+        let v0 = f.alloc_value(); // original value
+        let v1 = f.alloc_value(); // copy of v0
+        let v2 = f.alloc_value(); // use of v1
+
+        f.block_mut(b0).push(Instruction::BinOp {
+            result: v0,
+            op: BinOpKind::Add,
+            lhs: Operand::Const(ConstValue::I32(1)),
+            rhs: Operand::Const(ConstValue::I32(2)),
+            ty: IrType::I32,
+        });
+        f.block_mut(b0).push(Instruction::Copy {
+            result: v1,
+            src: Operand::Value(v0),
+        });
+        f.block_mut(b0).push(Instruction::BinOp {
+            result: v2,
+            op: BinOpKind::Add,
+            lhs: Operand::Value(v1),
+            rhs: Operand::Const(ConstValue::I32(3)),
+            ty: IrType::I32,
+        });
+        f.block_mut(b0).set_terminator(Terminator::Ret {
+            value: Some(Operand::Value(v2)),
+        });
+
+        let changed = copy_prop(&mut f);
+        assert!(changed);
+
+        // v1 usage in the BinOp should be replaced with v0
+        if let Instruction::BinOp { lhs, .. } = &f.block(b0).insts[2] {
+            assert_eq!(*lhs, Operand::Value(v0));
+        } else {
+            panic!("Expected BinOp");
+        }
+    }
+
+    #[test]
+    fn test_copy_prop_chain() {
+        let mut f = IrFunction::new("test", IrType::I32, Linkage::External);
+        let b0 = f.create_block("entry");
+
+        let v0 = f.alloc_value();
+        let v1 = f.alloc_value();
+        let v2 = f.alloc_value();
+        let v3 = f.alloc_value();
+
+        f.block_mut(b0).push(Instruction::BinOp {
+            result: v0,
+            op: BinOpKind::Add,
+            lhs: Operand::Const(ConstValue::I32(1)),
+            rhs: Operand::Const(ConstValue::I32(2)),
+            ty: IrType::I32,
+        });
+        f.block_mut(b0).push(Instruction::Copy {
+            result: v1,
+            src: Operand::Value(v0),
+        });
+        f.block_mut(b0).push(Instruction::Copy {
+            result: v2,
+            src: Operand::Value(v1),
+        });
+        f.block_mut(b0).push(Instruction::BinOp {
+            result: v3,
+            op: BinOpKind::Add,
+            lhs: Operand::Value(v2),
+            rhs: Operand::Const(ConstValue::I32(3)),
+            ty: IrType::I32,
+        });
+        f.block_mut(b0).set_terminator(Terminator::Ret {
+            value: Some(Operand::Value(v3)),
+        });
+
+        let changed = copy_prop(&mut f);
+        assert!(changed);
+
+        // v2 usage should resolve through chain to v0
+        if let Instruction::BinOp { lhs, .. } = &f.block(b0).insts[3] {
+            assert_eq!(*lhs, Operand::Value(v0));
+        }
+    }
+
+    #[test]
+    fn test_copy_prop_const() {
+        let mut f = IrFunction::new("test", IrType::I32, Linkage::External);
+        let b0 = f.create_block("entry");
+
+        let v0 = f.alloc_value();
+        let v1 = f.alloc_value();
+
+        f.block_mut(b0).push(Instruction::Copy {
+            result: v0,
+            src: Operand::Const(ConstValue::I32(42)),
+        });
+        f.block_mut(b0).push(Instruction::BinOp {
+            result: v1,
+            op: BinOpKind::Add,
+            lhs: Operand::Value(v0),
+            rhs: Operand::Const(ConstValue::I32(1)),
+            ty: IrType::I32,
+        });
+        f.block_mut(b0).set_terminator(Terminator::Ret {
+            value: Some(Operand::Value(v1)),
+        });
+
+        let changed = copy_prop(&mut f);
+        assert!(changed);
+
+        // v0 should be replaced with const 42
+        if let Instruction::BinOp { lhs, .. } = &f.block(b0).insts[1] {
+            assert_eq!(*lhs, Operand::Const(ConstValue::I32(42)));
+        }
+    }
+}
