@@ -297,3 +297,85 @@ fn is_wide_type(ty: &IrType) -> bool {
     matches!(ty, IrType::I128 | IrType::U128)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::module::IrFunction;
+
+    #[test]
+    fn test_diamond_conversion() {
+        let mut f = IrFunction::new("test", IrType::I32, Linkage::External);
+        let entry = f.create_block("entry");
+        let true_bb = f.create_block("true");
+        let false_bb = f.create_block("false");
+        let merge = f.create_block("merge");
+
+        let cond_v = f.alloc_value();
+        let t_val = f.alloc_value();
+        let f_val = f.alloc_value();
+        let phi_v = f.alloc_value();
+
+        // Entry: condbr cond → true, false
+        f.block_mut(entry).push(Instruction::Copy {
+            result: cond_v,
+            src: Operand::Const(ConstValue::I32(1)),
+        });
+        f.block_mut(entry).set_terminator(Terminator::CondBr {
+            cond: Operand::Value(cond_v),
+            true_bb,
+            false_bb,
+        });
+
+        // True block: v1 = 10; br merge
+        f.block_mut(true_bb).push(Instruction::Copy {
+            result: t_val,
+            src: Operand::Const(ConstValue::I32(10)),
+        });
+        f.block_mut(true_bb).set_terminator(Terminator::Br { target: merge });
+
+        // False block: v2 = 20; br merge
+        f.block_mut(false_bb).push(Instruction::Copy {
+            result: f_val,
+            src: Operand::Const(ConstValue::I32(20)),
+        });
+        f.block_mut(false_bb).set_terminator(Terminator::Br { target: merge });
+
+        // Merge: phi [true→v1, false→v2]; ret phi
+        f.block_mut(merge).push(Instruction::Phi {
+            result: phi_v,
+            ty: IrType::I32,
+            incoming: vec![
+                (true_bb, Operand::Value(t_val)),
+                (false_bb, Operand::Value(f_val)),
+            ],
+        });
+        f.block_mut(merge).set_terminator(Terminator::Ret {
+            value: Some(Operand::Value(phi_v)),
+        });
+
+        let changed = if_convert(&mut f);
+        assert!(changed);
+
+        // Entry block should now have a select.
+        let has_select = f.blocks[0].insts.iter().any(|i| matches!(i, Instruction::Select { .. }));
+        assert!(has_select, "Expected Select in entry block");
+    }
+
+    #[test]
+    fn test_arm_too_large() {
+        let insts: Vec<Instruction> = (0..MAX_ARM_INSTRS + 1)
+            .map(|_| Instruction::Nop)
+            .collect();
+        assert!(!is_arm_convertible(&insts));
+    }
+
+    #[test]
+    fn test_arm_with_side_effects() {
+        let insts = vec![Instruction::Store {
+            addr: Operand::Const(ConstValue::NullPtr),
+            value: Operand::Const(ConstValue::I32(0)),
+            ty: IrType::I32,
+        }];
+        assert!(!is_arm_convertible(&insts));
+    }
+}
