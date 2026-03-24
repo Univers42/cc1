@@ -336,3 +336,75 @@ fn i64_to_const(v: i64, ty: &IrType) -> ConstValue {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::instruction::Terminator;
+    use crate::ir::module::IrFunction;
+
+    #[test]
+    fn test_find_basic_ivs_simple() {
+        let mut f = IrFunction::new("test", IrType::I32, Linkage::External);
+        let preheader = f.create_block("preheader");
+        let header = f.create_block("header");
+        let body = f.create_block("body");
+        let exit = f.create_block("exit");
+
+        let iv = f.alloc_value();
+        let iv_inc = f.alloc_value();
+        let cmp = f.alloc_value();
+
+        // preheader → header
+        f.block_mut(preheader).set_terminator(Terminator::Br { target: header });
+
+        // header: iv = phi [preheader: 0, body: iv_inc]
+        f.block_mut(header).push(Instruction::Phi {
+            result: iv,
+            ty: IrType::I32,
+            incoming: vec![
+                (preheader, Operand::Const(ConstValue::I32(0))),
+                (body, Operand::Value(iv_inc)),
+            ],
+        });
+        f.block_mut(header).push(Instruction::Icmp {
+            result: cmp,
+            pred: IcmpPred::Slt,
+            lhs: Operand::Value(iv),
+            rhs: Operand::Const(ConstValue::I32(100)),
+            ty: IrType::I32,
+        });
+        f.block_mut(header).set_terminator(Terminator::CondBr {
+            cond: Operand::Value(cmp),
+            true_bb: body,
+            false_bb: exit,
+        });
+
+        // body: iv_inc = iv + 1; br header
+        f.block_mut(body).push(Instruction::BinOp {
+            result: iv_inc,
+            op: BinOpKind::Add,
+            lhs: Operand::Value(iv),
+            rhs: Operand::Const(ConstValue::I32(1)),
+            ty: IrType::I32,
+        });
+        f.block_mut(body).set_terminator(Terminator::Br { target: header });
+
+        // exit
+        f.block_mut(exit).set_terminator(Terminator::Ret {
+            value: Some(Operand::Value(iv)),
+        });
+
+        let body_set: HashSet<BlockId> = vec![header, body].into_iter().collect();
+        let lp = crate::ir::optimize::loop_analysis::NaturalLoop {
+            header,
+            body: body_set,
+            preheader: Some(preheader),
+            latches: vec![body],
+        };
+
+        let bivs = find_basic_ivs(&f, &lp);
+        assert_eq!(bivs.len(), 1);
+        assert_eq!(bivs[0].phi_val, iv);
+        assert_eq!(bivs[0].step, 1);
+    }
+}
