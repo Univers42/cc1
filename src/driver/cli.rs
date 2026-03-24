@@ -974,3 +974,67 @@ mod tests {
     }
 
     #[test]
+    fn test_target_detection_from_argv0() {
+        assert_eq!(detect_target_from_argv0("cc1"), Target::X86_64);
+        assert_eq!(detect_target_from_argv0("i686-linux-gnu-cc1"), Target::I386);
+        assert_eq!(detect_target_from_argv0("/usr/bin/i386-cc1"), Target::I386);
+        assert_eq!(detect_target_from_argv0("x86_64-linux-gnu-cc1"), Target::X86_64);
+    }
+
+    #[test]
+    fn test_response_file_tokenization() {
+        let tokens = tokenize_response_file("  -DFOO  -DBAR=42  \n  \"hello world\"  ");
+        assert_eq!(tokens, vec!["-DFOO", "-DBAR=42", "hello world"]);
+    }
+
+    #[test]
+    fn test_patchable_function_entry() {
+        let (d, _) = parse(&["-fpatchable-function-entry=16,6", "test.c"]);
+        assert_eq!(d.patchable_function_entry, Some((16, 6)));
+    }
+
+    #[test]
+    fn test_dependency_flags() {
+        let (d, _) = parse(&["-MF", "out.d", "-MT", "out.o", "test.c"]);
+        assert_eq!(d.dep_file.as_deref(), Some("out.d"));
+        assert_eq!(d.dep_target.as_deref(), Some("out.o"));
+    }
+
+    #[test]
+    fn test_pthread() {
+        let (d, _) = parse(&["-pthread", "test.c"]);
+        assert!(d.pthread);
+    }
+
+    #[test]
+    fn test_escale_make_target() {
+        assert_eq!(escape_make_target("foo.o"), "foo.o");
+        assert_eq!(escape_make_target("$foo"), "$$foo");
+        assert_eq!(escape_make_target("foo bar"), "foo\\ bar");
+    }
+
+    #[test]
+    fn test_codegen_flags() {
+        let (d, _) = parse(&["-ffunction-sections", "-fdata-sections", "test.c"]);
+        assert!(d.function_sections);
+        assert!(d.data_sections);
+
+        let (d, _) = parse(&["-fomit-frame-pointer", "test.c"]);
+        assert!(d.omit_frame_pointer);
+
+        let (d, _) = parse(&["-fno-asynchronous-unwind-tables", "test.c"]);
+        assert!(d.no_unwind_tables);
+    }
+
+    #[test]
+    fn test_m16() {
+        let (d, _) = parse(&["-m16", "test.c"]);
+        assert_eq!(d.target, Target::I386);
+        assert!(d.code16gcc);
+    }
+
+    #[test]
+    fn test_shared_flag() {
+        let (d, _) = parse(&["-shared", "test.c"]);
+        assert!(d.shared_lib);
+    }
