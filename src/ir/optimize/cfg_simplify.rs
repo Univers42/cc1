@@ -98,3 +98,93 @@ fn simplify_redundant_branches(func: &mut IrFunction) -> bool {
 }
 
 /// Thread jump chains: redirect predecessors of empty unconditional-branch blocks.
+fn thread_jump_chains(func: &mut IrFunction) -> bool {
+    let mut changed = false;
+    const MAX_CHAIN_DEPTH: usize = 32;
+
+    // Build a map of block_id -> final target for empty blocks.
+    let mut redirect: Vec<Option<BlockId>> = vec![None; func.blocks.len()];
+
+    for (bi, block) in func.blocks.iter().enumerate() {
+        if block.insts.is_empty() {
+            if let Terminator::Br { target } = &block.terminator {
+                // Follow chain
+                let mut final_target = *target;
+                let mut visited = HashSet::new();
+                visited.insert(BlockId(bi as u32));
+                let mut depth = 0;
+                while depth < MAX_CHAIN_DEPTH {
+                    let ti = final_target.0 as usize;
+                    if ti >= func.blocks.len() { break; }
+                    if !func.blocks[ti].insts.is_empty() { break; }
+                    if let Terminator::Br { target: next } = &func.blocks[ti].terminator {
+                        if visited.contains(next) { break; } // cycle
+                        visited.insert(*next);
+                        final_target = *next;
+                        depth += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if final_target != *target {
+                    redirect[bi] = Some(final_target);
+                }
+            }
+        }
+    }
+
+    // Apply redirections to all terminators.
+    for bi in 0..func.blocks.len() {
+        let term = &mut func.blocks[bi].terminator;
+        match term {
+            Terminator::Br { target } => {
+                let ti = target.0 as usize;
+                if ti < redirect.len() {
+                    if let Some(new_target) = redirect[ti] {
+                        *target = new_target;
+                        changed = true;
+                    }
+                }
+            }
+            Terminator::CondBr { true_bb, false_bb, .. } => {
+                let ti = true_bb.0 as usize;
+                if ti < redirect.len() {
+                    if let Some(new_target) = redirect[ti] {
+                        *true_bb = new_target;
+                        changed = true;
+                    }
+                }
+                let fi = false_bb.0 as usize;
+                if fi < redirect.len() {
+                    if let Some(new_target) = redirect[fi] {
+                        *false_bb = new_target;
+                        changed = true;
+                    }
+                }
+            }
+            Terminator::Switch { default, cases, .. } => {
+                let di = default.0 as usize;
+                if di < redirect.len() {
+                    if let Some(new_target) = redirect[di] {
+                        *default = new_target;
+                        changed = true;
+                    }
+                }
+                for (_, bb) in cases {
+                    let ci = bb.0 as usize;
+                    if ci < redirect.len() {
+                        if let Some(new_target) = redirect[ci] {
+                            *bb = new_target;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    changed
+}
+
+/// Remove dead (unreachable) blocks via BFS from the entry.
