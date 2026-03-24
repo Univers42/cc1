@@ -97,3 +97,61 @@ fn constant_return_propagation(module: &mut IrModule) -> bool {
 }
 
 /// Remove calls to side-effect-free functions when the result is unused.
+fn dead_call_elimination(module: &mut IrModule) -> bool {
+    // Identify pure / side-effect-free functions.
+    let mut pure_funcs: HashSet<String> = HashSet::new();
+
+    for func in &module.functions {
+        if func.blocks.is_empty() {
+            continue;
+        }
+        if is_function_pure(func) {
+            pure_funcs.insert(func.name.clone());
+        }
+    }
+
+    if pure_funcs.is_empty() {
+        return false;
+    }
+
+    // Collect address-taken functions (they cannot be DCE'd).
+    let mut addr_taken: HashSet<String> = HashSet::new();
+    for func in &module.functions {
+        for block in &func.blocks {
+            for inst in &block.insts {
+                if let Instruction::GlobalAddr { name, .. } = inst {
+                    addr_taken.insert(name.clone());
+                }
+            }
+        }
+    }
+
+    let mut changed = false;
+
+    // Build use counts for values, then remove dead calls.
+    for fi in 0..module.functions.len() {
+        let use_counts = build_use_counts(&module.functions[fi]);
+        let func = &mut module.functions[fi];
+
+        for block in &mut func.blocks {
+            block.insts.retain(|inst| {
+                if let Instruction::Call { result, callee, .. } = inst {
+                    if pure_funcs.contains(callee.as_str())
+                        && !addr_taken.contains(callee.as_str())
+                    {
+                        let uses = use_counts.get(result).copied().unwrap_or(0);
+                        if uses == 0 {
+                            changed = true;
+                            return false; // Remove
+                        }
+                    }
+                }
+                true
+            });
+        }
+    }
+
+    changed
+}
+
+/// If a parameter receives the same constant at all call sites, propagate it.
