@@ -1,15 +1,25 @@
-// cc1 — C89 Compiler Front-End for LLVM
-// Entry point: CLI parsing → compilation pipeline
+// cc1 — C89 Compiler
+// Entry point: dispatches to the driver via compiler_main().
+//
+// The driver handles GCC-compatible CLI parsing, multi-file compilation,
+// and the full pipeline from preprocessing through linking.
 
-use std::env;
 use std::process;
 
-use cc1::ctx::Ctx;
-use cc1::diagnostics::DiagEngine;
-use cc1::opts::{EmitMode, Opts};
-use cc1::source::SourceMap;
+fn main() {
+    process::exit(cc1::compiler_main());
+}
 
-fn run() -> i32 {
+// ── Legacy single-file pipeline (kept for reference / --emit-llvm) ────
+
+#[allow(dead_code)]
+fn legacy_run() -> i32 {
+    use std::env;
+    use cc1::ctx::Ctx;
+    use cc1::diagnostics::DiagEngine;
+    use cc1::opts::{EmitMode, Opts};
+    use cc1::source::SourceMap;
+
     let args: Vec<String> = env::args().skip(1).collect();
     let opts = match Opts::parse(&args) {
         Ok(o) => o,
@@ -176,8 +186,4 @@ fn run() -> i32 {
     }
 
     0
-}
-
-fn main() {
-    process::exit(run());
 }
