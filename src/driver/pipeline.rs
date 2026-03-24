@@ -698,3 +698,63 @@ impl Driver {
         }
         if diag.has_errors() {
             diag.emit_all(&source_map);
+            return Err(format!("semantic errors in '{}'", input_path));
+        }
+        // Check for warnings promoted to errors by -Werror.
+        if self.warning_config.error && diag.has_warnings() {
+            diag.emit_all(&source_map);
+            return Err("warnings treated as errors".into());
+        }
+
+        // ── Phase 5: Lowerer (AST → alloca-based IR) ──────────────
+        let phase_start = Instant::now();
+        let ir_module = crate::ir::lower::Lowering::lower(&ctx, translation_unit, input_path);
+        if time_phases {
+            let func_count = ir_module.functions.len();
+            eprintln!(
+                "[TIME] lowering: {:.3}s ({} functions)",
+                phase_start.elapsed().as_secs_f64(),
+                func_count
+            );
+        }
+
+        // ── Post-lowering transformations ──────────────────────────
+        // TODO: #pragma weak, #pragma redefine_extname, -fcommon
+
+        // ── Phase 6: mem2reg ───────────────────────────────────────
+        // TODO: Promote allocas to SSA phi nodes (currently handled as no-op in optimizer).
+        if time_phases {
+            eprintln!("[TIME] mem2reg: 0.000s (integrated into optimizer)");
+        }
+
+        // ── Phase 7: Optimization passes ───────────────────────────
+        let phase_start_opt = Instant::now();
+        let mut ir_module = ir_module;
+        crate::ir::optimize::optimize(&mut ir_module, self.target);
+        if time_phases {
+            eprintln!(
+                "[TIME] opt passes: {:.3}s",
+                phase_start_opt.elapsed().as_secs_f64()
+            );
+        }
+
+        // ── Phase 8: Phi elimination ───────────────────────────────
+        // TODO: SSA phi nodes → Copy instructions.
+        if time_phases {
+            eprintln!("[TIME] phi elimination: 0.000s (not yet implemented)");
+        }
+
+        // ── Phase 9: Codegen (IR → assembly) ───────────────────────
+        let phase_start = Instant::now();
+
+        use crate::backend::native::generation::generate_asm;
+        use crate::backend::native::x86_64::codegen::X86_64Codegen;
+
+        let arch_codegen: Box<dyn crate::backend::native::traits::ArchCodegen> = match self.target {
+            Target::X86_64 => Box::new(X86_64Codegen::new()),
+            Target::I386 => {
+                return Err("i386 native backend not yet implemented".into());
+            }
+        };
+
+        let asm = generate_asm(arch_codegen.as_ref(), &ir_module, self.target);
