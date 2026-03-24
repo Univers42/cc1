@@ -949,3 +949,52 @@ fn replace_extension(path: &str, new_ext: &str) -> String {
 
 // ── Tests ──────────────────────────────────────────────────────────────
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_driver_new_defaults() {
+        let d = Driver::new();
+        assert_eq!(d.mode, CompileMode::Full);
+        assert_eq!(d.output_path, "a.out");
+        assert!(!d.output_path_set);
+        assert!(d.input_files.is_empty());
+        assert!(!d.optimize);
+        assert!(d.gnu_extensions);
+        assert!(!d.debug_info);
+        assert!(!d.pic);
+        assert_eq!(d.opt_level, 2);
+    }
+
+    #[test]
+    fn test_compile_mode_variants() {
+        assert_ne!(CompileMode::PreprocessOnly, CompileMode::Full);
+        assert_ne!(CompileMode::AssemblyOnly, CompileMode::ObjectOnly);
+    }
+
+    #[test]
+    fn test_warning_config_defaults() {
+        let w = WarningConfig::new();
+        assert!(w.all);
+        assert!(!w.extra);
+        assert!(!w.error);
+        assert!(!w.suppress_all);
+    }
+
+    #[test]
+    fn test_derive_output_path() {
+        assert_eq!(derive_output_path("foo.c", ".s"), "foo.s");
+        assert_eq!(derive_output_path("path/to/bar.c", ".o"), "path/to/bar.o");
+        assert_eq!(derive_output_path("noext", ".o"), "noext.o");
+    }
+
+    #[test]
+    fn test_codegen_options_pic_forced_with_shared() {
+        let mut d = Driver::new();
+        d.shared_lib = true;
+        d.pic = false;
+        let opts = d.codegen_options();
+        assert!(opts.pic);
+    }
+
