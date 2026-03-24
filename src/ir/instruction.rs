@@ -502,6 +502,47 @@ impl Instruction {
                 | Instruction::Select { .. }
         )
     }
+
+    /// Returns true if this instruction clobbers memory (invalidates load CSE).
+    pub fn clobbers_memory(&self) -> bool {
+        matches!(
+            self,
+            Instruction::Store { .. }
+                | Instruction::Call { .. }
+                | Instruction::CallIndirect { .. }
+                | Instruction::AtomicStore { .. }
+                | Instruction::AtomicRmw { .. }
+                | Instruction::AtomicCmpxchg { .. }
+                | Instruction::InlineAsm { .. }
+                | Instruction::StackRestore { .. }
+        )
+    }
+}
+
+impl Terminator {
+    /// Iterate over operands mutably.
+    pub fn for_each_operand_mut<F: FnMut(&mut Operand)>(&mut self, mut f: F) {
+        match self {
+            Terminator::Ret { value: Some(v) } => f(v),
+            Terminator::Ret { value: None } | Terminator::Unreachable => {}
+            Terminator::Br { .. } => {}
+            Terminator::CondBr { cond, .. } => f(cond),
+            Terminator::Switch { discr, .. } => f(discr),
+            Terminator::IndirectBr { addr, .. } => f(addr),
+        }
+    }
+
+    /// Replace successor block references.
+    pub fn replace_successor(&mut self, old: BlockId, new: BlockId) {
+        match self {
+            Terminator::Br { target } => {
+                if *target == old {
+                    *target = new;
+                }
+            }
+            Terminator::CondBr {
+                true_bb, false_bb, ..
+            } => {
     }
 }
 
