@@ -328,3 +328,167 @@ fn inline_call_site(
 }
 
 /// Remap an instruction's values and blocks.
+fn remap_instruction(
+    inst: &Instruction,
+    remap_op: &dyn Fn(&Operand) -> Operand,
+    remap_val: &dyn Fn(ValueId) -> ValueId,
+    remap_blk: &dyn Fn(BlockId) -> BlockId,
+) -> Instruction {
+    match inst {
+        Instruction::Alloca { result, ty, align } => Instruction::Alloca {
+            result: remap_val(*result),
+            ty: ty.clone(),
+            align: *align,
+        },
+        Instruction::DynAlloca { result, ty, count } => Instruction::DynAlloca {
+            result: remap_val(*result),
+            ty: ty.clone(),
+            count: remap_op(count),
+        },
+        Instruction::Store { addr, value, ty } => Instruction::Store {
+            addr: remap_op(addr),
+            value: remap_op(value),
+            ty: ty.clone(),
+        },
+        Instruction::Load { result, addr, ty } => Instruction::Load {
+            result: remap_val(*result),
+            addr: remap_op(addr),
+            ty: ty.clone(),
+        },
+        Instruction::BinOp { result, op, lhs, rhs, ty } => Instruction::BinOp {
+            result: remap_val(*result),
+            op: *op,
+            lhs: remap_op(lhs),
+            rhs: remap_op(rhs),
+            ty: ty.clone(),
+        },
+        Instruction::UnaryOp { result, op, operand, ty } => Instruction::UnaryOp {
+            result: remap_val(*result),
+            op: *op,
+            operand: remap_op(operand),
+            ty: ty.clone(),
+        },
+        Instruction::Icmp { result, pred, lhs, rhs, ty } => Instruction::Icmp {
+            result: remap_val(*result),
+            pred: *pred,
+            lhs: remap_op(lhs),
+            rhs: remap_op(rhs),
+            ty: ty.clone(),
+        },
+        Instruction::Fcmp { result, pred, lhs, rhs, ty } => Instruction::Fcmp {
+            result: remap_val(*result),
+            pred: *pred,
+            lhs: remap_op(lhs),
+            rhs: remap_op(rhs),
+            ty: ty.clone(),
+        },
+        Instruction::Cast { result, kind, src, src_ty, dst_ty } => Instruction::Cast {
+            result: remap_val(*result),
+            kind: *kind,
+            src: remap_op(src),
+            src_ty: src_ty.clone(),
+            dst_ty: dst_ty.clone(),
+        },
+        Instruction::Call { result, callee, args, ret_ty, is_variadic } => Instruction::Call {
+            result: remap_val(*result),
+            callee: callee.clone(),
+            args: args.iter().map(|(op, ty)| (remap_op(op), ty.clone())).collect(),
+            ret_ty: ret_ty.clone(),
+            is_variadic: *is_variadic,
+        },
+        Instruction::CallIndirect { result, func_ptr, args, ret_ty, is_variadic } => {
+            Instruction::CallIndirect {
+                result: remap_val(*result),
+                func_ptr: remap_op(func_ptr),
+                args: args.iter().map(|(op, ty)| (remap_op(op), ty.clone())).collect(),
+                ret_ty: ret_ty.clone(),
+                is_variadic: *is_variadic,
+            }
+        }
+        Instruction::GetElementPtr { result, base, offset, elem_ty } => {
+            Instruction::GetElementPtr {
+                result: remap_val(*result),
+                base: remap_op(base),
+                offset: remap_op(offset),
+                elem_ty: elem_ty.clone(),
+            }
+        }
+        Instruction::GlobalAddr { result, name } => Instruction::GlobalAddr {
+            result: remap_val(*result),
+            name: name.clone(),
+        },
+        Instruction::LabelAddr { result, block } => Instruction::LabelAddr {
+            result: remap_val(*result),
+            block: remap_blk(*block),
+        },
+        Instruction::Select { result, cond, true_val, false_val, ty } => Instruction::Select {
+            result: remap_val(*result),
+            cond: remap_op(cond),
+            true_val: remap_op(true_val),
+            false_val: remap_op(false_val),
+            ty: ty.clone(),
+        },
+        Instruction::Copy { result, src } => Instruction::Copy {
+            result: remap_val(*result),
+            src: remap_op(src),
+        },
+        Instruction::Phi { result, ty, incoming } => Instruction::Phi {
+            result: remap_val(*result),
+            ty: ty.clone(),
+            incoming: incoming
+                .iter()
+                .map(|(b, op)| (remap_blk(*b), remap_op(op)))
+                .collect(),
+        },
+        Instruction::AtomicLoad { result, addr, ty, ordering } => Instruction::AtomicLoad {
+            result: remap_val(*result),
+            addr: remap_op(addr),
+            ty: ty.clone(),
+            ordering: *ordering,
+        },
+        Instruction::AtomicStore { addr, value, ty, ordering } => Instruction::AtomicStore {
+            addr: remap_op(addr),
+            value: remap_op(value),
+            ty: ty.clone(),
+            ordering: *ordering,
+        },
+        Instruction::AtomicRmw { result, op, addr, value, ty, ordering } => {
+            Instruction::AtomicRmw {
+                result: remap_val(*result),
+                op: *op,
+                addr: remap_op(addr),
+                value: remap_op(value),
+                ty: ty.clone(),
+                ordering: *ordering,
+            }
+        }
+        Instruction::AtomicCmpxchg {
+            result, addr, expected, desired, ty,
+            success_ordering, failure_ordering,
+        } => Instruction::AtomicCmpxchg {
+            result: remap_val(*result),
+            addr: remap_op(addr),
+            expected: remap_op(expected),
+            desired: remap_op(desired),
+            ty: ty.clone(),
+            success_ordering: *success_ordering,
+            failure_ordering: *failure_ordering,
+        },
+        Instruction::StackRestore { saved_sp } => Instruction::StackRestore {
+            saved_sp: remap_op(saved_sp),
+        },
+        Instruction::InlineAsm {
+            result, template, constraints, operands,
+            has_side_effects, align_stack,
+        } => Instruction::InlineAsm {
+            result: remap_val(*result),
+            template: template.clone(),
+            constraints: constraints.clone(),
+            operands: operands.iter().map(|(op, ty)| (remap_op(op), ty.clone())).collect(),
+            has_side_effects: *has_side_effects,
+            align_stack: *align_stack,
+        },
+        Instruction::Nop => Instruction::Nop,
+    }
+}
+
