@@ -104,3 +104,97 @@ fn tokenize_response_file(content: &str) -> Vec<String> {
 ///
 /// Returns `Ok(true)` if a query flag was handled (program should exit),
 /// `Ok(false)` if parsing completed normally and compilation should proceed.
+pub fn parse_cli_args(driver: &mut Driver, argv0: &str, args: &[String]) -> Result<bool, String> {
+    // Save raw args for -m16 passthrough.
+    driver.raw_args = args.to_vec();
+
+    // Detect target from binary name.
+    driver.target = detect_target_from_argv0(argv0);
+
+    // Expand response files.
+    let args = expand_response_files(args)?;
+
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i].clone();
+
+        match arg.as_str() {
+            // ── Query flags (early exit) ───────────────────────────
+
+            "-dumpmachine" => {
+                println!("{}", driver.target_triple());
+                return Ok(true);
+            }
+            "-dumpversion" => {
+                println!("14");
+                return Ok(true);
+            }
+            "--version" => {
+                print_version(driver);
+                return Ok(true);
+            }
+            "-v" | "--verbose" => {
+                // If -v alone (no input files after), print version and exit.
+                // Otherwise, set verbose mode.
+                if args.len() == 1 || (i == 0 && no_input_files(&args[1..])) {
+                    print_verbose_version(driver);
+                    return Ok(true);
+                }
+                driver.verbose = true;
+            }
+            "-print-search-dirs" => {
+                println!("install: /usr/lib/gcc/{}/14/", driver.target_triple());
+                println!("programs: /usr/lib/gcc/{}/14/:/usr/bin/", driver.target_triple());
+                println!("libraries: /usr/lib/gcc/{}/14/:/usr/lib/:/lib/", driver.target_triple());
+                return Ok(true);
+            }
+            a if a.starts_with("-print-file-name=") => {
+                let name = &a["-print-file-name=".len()..];
+                if name == "include" {
+                    // Return bundled include directory.
+                    println!("/usr/lib/gcc/{}/14/include", driver.target_triple());
+                } else {
+                    // Search standard GCC library paths.
+                    let search_dirs = [
+                        format!("/usr/lib/gcc/{}/14/", driver.target_triple()),
+                        "/usr/lib/".into(),
+                        "/lib/".into(),
+                    ];
+                    let mut found = false;
+                    for dir in &search_dirs {
+                        let path = format!("{}{}", dir, name);
+                        if std::path::Path::new(&path).exists() {
+                            println!("{}", path);
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        println!("{}", name);
+                    }
+                }
+                return Ok(true);
+            }
+
+            // ── Mode selection ─────────────────────────────────────
+
+            "-E" => driver.mode = CompileMode::PreprocessOnly,
+            "-S" => driver.mode = CompileMode::AssemblyOnly,
+            "-c" => driver.mode = CompileMode::ObjectOnly,
+
+            // ── Output ─────────────────────────────────────────────
+
+            "-o" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("-o requires an argument".into());
+                }
+                driver.output_path = args[i].clone();
+                driver.output_path_set = true;
+            }
+            a if a.starts_with("-o") && a.len() > 2 => {
+                driver.output_path = a[2..].to_string();
+                driver.output_path_set = true;
+            }
+
+            // ── Target override ────────────────────────────────────
