@@ -189,3 +189,116 @@ fn is_commutative(op: BinOpKind) -> bool {
     )
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::instruction::Terminator;
+
+    #[test]
+    fn test_gvn_cse() {
+        let mut f = IrFunction::new("test", IrType::I32, Linkage::External);
+        let b = f.create_block("entry");
+
+        let v0 = f.alloc_value(); // input
+        let v1 = f.alloc_value(); // add v0, v0
+        let v2 = f.alloc_value(); // add v0, v0 (redundant)
+        let v3 = f.alloc_value(); // use both
+
+        f.block_mut(b).push(Instruction::Alloca {
+            result: v0,
+            ty: IrType::I32,
+            align: 4,
+        });
+        f.block_mut(b).push(Instruction::BinOp {
+            result: v1,
+            op: BinOpKind::Add,
+            lhs: Operand::Value(v0),
+            rhs: Operand::Value(v0),
+            ty: IrType::I32,
+        });
+        f.block_mut(b).push(Instruction::BinOp {
+            result: v2,
+            op: BinOpKind::Add,
+            lhs: Operand::Value(v0),
+            rhs: Operand::Value(v0),
+            ty: IrType::I32,
+        });
+        f.block_mut(b).push(Instruction::BinOp {
+            result: v3,
+            op: BinOpKind::Add,
+            lhs: Operand::Value(v1),
+            rhs: Operand::Value(v2),
+            ty: IrType::I32,
+        });
+        f.block_mut(b).set_terminator(Terminator::Ret {
+            value: Some(Operand::Value(v3)),
+        });
+
+        assert!(gvn(&mut f));
+        // v2 should be replaced with Copy of v1
+        assert!(matches!(f.block(b).insts[2], Instruction::Copy { .. }));
+    }
+
+    #[test]
+    fn test_gvn_commutative() {
+        let mut f = IrFunction::new("test", IrType::I32, Linkage::External);
+        let b = f.create_block("entry");
+
+        let v0 = f.alloc_value();
+        let v1 = f.alloc_value();
+        let v2 = f.alloc_value(); // add v0, v1
+        let v3 = f.alloc_value(); // add v1, v0 (same due to commutativity)
+
+        f.block_mut(b).push(Instruction::Alloca { result: v0, ty: IrType::I32, align: 4 });
+        f.block_mut(b).push(Instruction::Alloca { result: v1, ty: IrType::I32, align: 4 });
+        f.block_mut(b).push(Instruction::BinOp {
+            result: v2,
+            op: BinOpKind::Add,
+            lhs: Operand::Value(v0),
+            rhs: Operand::Value(v1),
+            ty: IrType::I32,
+        });
+        f.block_mut(b).push(Instruction::BinOp {
+            result: v3,
+            op: BinOpKind::Add,
+            lhs: Operand::Value(v1),
+            rhs: Operand::Value(v0),
+            ty: IrType::I32,
+        });
+        f.block_mut(b).set_terminator(Terminator::Ret {
+            value: Some(Operand::Value(v3)),
+        });
+
+        assert!(gvn(&mut f));
+        assert!(matches!(f.block(b).insts[3], Instruction::Copy { .. }));
+    }
+
+    #[test]
+    fn test_gvn_load_elimination() {
+        let mut f = IrFunction::new("test", IrType::I32, Linkage::External);
+        let b = f.create_block("entry");
+
+        let ptr = f.alloc_value();
+        let v1 = f.alloc_value(); // first load
+        let v2 = f.alloc_value(); // redundant load
+
+        f.block_mut(b).push(Instruction::Alloca { result: ptr, ty: IrType::I32, align: 4 });
+        f.block_mut(b).push(Instruction::Load {
+            result: v1,
+            addr: Operand::Value(ptr),
+            ty: IrType::I32,
+        });
+        f.block_mut(b).push(Instruction::Load {
+            result: v2,
+            addr: Operand::Value(ptr),
+            ty: IrType::I32,
+        });
+        f.block_mut(b).set_terminator(Terminator::Ret {
+            value: Some(Operand::Value(v2)),
+        });
+
+        assert!(gvn(&mut f));
+        // Second load should become Copy of first load's result
+        assert!(matches!(f.block(b).insts[2], Instruction::Copy { .. }));
+    }
+}
