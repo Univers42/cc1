@@ -268,3 +268,125 @@ fn remove_dead_blocks(func: &mut IrFunction) -> bool {
 }
 
 /// Simplify trivial phi nodes (single incoming or all-same values).
+fn simplify_trivial_phis(func: &mut IrFunction) -> bool {
+    let mut changed = false;
+
+    for bi in 0..func.blocks.len() {
+        for ii in 0..func.blocks[bi].insts.len() {
+            if let Instruction::Phi { result, incoming, .. } = &func.blocks[bi].insts[ii] {
+                let result = *result;
+
+                // Single incoming edge
+                if incoming.len() == 1 {
+                    let src = incoming[0].1.clone();
+                    func.blocks[bi].insts[ii] = Instruction::Copy { result, src };
+                    changed = true;
+                    continue;
+                }
+
+                // All incoming values identical (excluding self-references)
+                if incoming.len() > 1 {
+                    let mut unique_val: Option<&Operand> = None;
+                    let mut all_same = true;
+                    for (_, val) in incoming {
+                        // Skip self-references
+                        if let Operand::Value(v) = val {
+                            if *v == result {
+                                continue;
+                            }
+                        }
+                        match unique_val {
+                            None => unique_val = Some(val),
+                            Some(prev) => {
+                                if prev != val {
+                                    all_same = false;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if all_same {
+                        if let Some(val) = unique_val {
+                            let src = val.clone();
+                            func.blocks[bi].insts[ii] = Instruction::Copy { result, src };
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    changed
+}
+
+/// Merge single-predecessor blocks. When block A ends with an unconditional branch
+/// to block B and B has exactly one predecessor (A), fuse B into A.
+fn merge_single_pred_blocks(func: &mut IrFunction) -> bool {
+    let mut changed = false;
+
+    // Rebuild predecessors
+    func.compute_predecessors();
+
+    // Iterate and merge
+    let mut merged = true;
+    while merged {
+        merged = false;
+        func.compute_predecessors();
+
+        for bi in 0..func.blocks.len() {
+            if let Terminator::Br { target } = func.blocks[bi].terminator {
+                let ti = target.0 as usize;
+                if ti < func.blocks.len()
+                    && ti != bi // don't merge self-loop
+                    && func.blocks[ti].preds.len() == 1
+                    && func.blocks[ti].preds[0] == BlockId(bi as u32)
+                {
+                    // Check: target block must not be referenced by LabelAddr
+                    let has_label_ref = func.blocks.iter().any(|b| {
+                        b.insts.iter().any(|inst| {
+                            matches!(inst, Instruction::LabelAddr { block, .. } if *block == target)
+                        })
+                    });
+                    if has_label_ref {
+                        continue;
+                    }
+
+                    // Merge: move B's instructions and terminator into A
+                    let b_insts = std::mem::take(&mut func.blocks[ti].insts);
+                    let b_term = func.blocks[ti].terminator.clone();
+
+                    func.blocks[bi].insts.extend(b_insts);
+                    func.blocks[bi].terminator = b_term;
+
+                    // Clear B
+                    func.blocks[ti].terminator = Terminator::Unreachable;
+                    func.blocks[ti].preds.clear();
+
+                    changed = true;
+                    merged = true;
+                    break; // Restart after merge
+                }
+            }
+        }
+    }
+
+    changed
+}
+
+/// Resolve a condition operand to a constant if it's an immediate constant value.
+fn resolve_cond_const(op: &Operand) -> Option<i64> {
+    match op {
+        Operand::Const(ConstValue::I8(v)) => Some(*v as i64),
+        Operand::Const(ConstValue::I16(v)) => Some(*v as i64),
+        Operand::Const(ConstValue::I32(v)) => Some(*v as i64),
+        Operand::Const(ConstValue::I64(v)) => Some(*v),
+        Operand::Const(ConstValue::U8(v)) => Some(*v as i64),
+        Operand::Const(ConstValue::U16(v)) => Some(*v as i64),
+        Operand::Const(ConstValue::U32(v)) => Some(*v as i64),
+        Operand::Const(ConstValue::U64(v)) => Some(*v as i64),
+        Operand::Const(ConstValue::NullPtr) => Some(0),
+        _ => None,
+    }
+}
+
