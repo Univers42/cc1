@@ -138,3 +138,108 @@ fn try_fold(inst: &Instruction, consts: &HashMap<ValueId, ConstValue>) -> Option
 }
 
 /// Try to fold a terminator (constant condBr → unconditional br).
+fn try_fold_terminator(term: &Terminator, consts: &HashMap<ValueId, ConstValue>) -> Option<Terminator> {
+    match term {
+        Terminator::CondBr { cond, true_bb, false_bb, .. } => {
+            let c = resolve_const(cond, consts)?;
+            let val = const_to_i64(&c)?;
+            if val != 0 {
+                Some(Terminator::Br { target: *true_bb })
+            } else {
+                Some(Terminator::Br { target: *false_bb })
+            }
+        }
+
+        Terminator::Switch { discr, ty: _, default, cases } => {
+            let d = resolve_const(discr, consts)?;
+            let val = const_to_i64(&d)?;
+            for (case_val, block) in cases {
+                if *case_val == val {
+                    return Some(Terminator::Br { target: *block });
+                }
+            }
+            Some(Terminator::Br { target: *default })
+        }
+
+        _ => None,
+    }
+}
+
+/// Convert a ConstValue to i64 for condition testing.
+fn const_to_i64(c: &ConstValue) -> Option<i64> {
+    match c {
+        ConstValue::I8(v) => Some(*v as i64),
+        ConstValue::I16(v) => Some(*v as i64),
+        ConstValue::I32(v) => Some(*v as i64),
+        ConstValue::I64(v) => Some(*v),
+        ConstValue::U8(v) => Some(*v as i64),
+        ConstValue::U16(v) => Some(*v as i64),
+        ConstValue::U32(v) => Some(*v as i64),
+        ConstValue::U64(v) => Some(*v as i64),
+        ConstValue::NullPtr => Some(0),
+        _ => None,
+    }
+}
+
+/// Convert a ConstValue to u64 for unsigned operations.
+fn const_to_u64(c: &ConstValue) -> Option<u64> {
+    match c {
+        ConstValue::I8(v) => Some(*v as u8 as u64),
+        ConstValue::I16(v) => Some(*v as u16 as u64),
+        ConstValue::I32(v) => Some(*v as u32 as u64),
+        ConstValue::I64(v) => Some(*v as u64),
+        ConstValue::U8(v) => Some(*v as u64),
+        ConstValue::U16(v) => Some(*v as u64),
+        ConstValue::U32(v) => Some(*v as u64),
+        ConstValue::U64(v) => Some(*v),
+        ConstValue::NullPtr => Some(0),
+        _ => None,
+    }
+}
+
+/// Create a ConstValue from i64 with the given type.
+fn i64_to_const(val: i64, ty: &IrType) -> ConstValue {
+    match ty {
+        IrType::I8 => ConstValue::I8(val as i8),
+        IrType::I16 => ConstValue::I16(val as i16),
+        IrType::I32 => ConstValue::I32(val as i32),
+        IrType::I64 => ConstValue::I64(val),
+        IrType::U8 => ConstValue::U8(val as u8),
+        IrType::U16 => ConstValue::U16(val as u16),
+        IrType::U32 => ConstValue::U32(val as u32),
+        IrType::U64 => ConstValue::U64(val as u64),
+        _ => ConstValue::I64(val),
+    }
+}
+
+fn u64_to_const(val: u64, ty: &IrType) -> ConstValue {
+    match ty {
+        IrType::I8 => ConstValue::I8(val as i8),
+        IrType::I16 => ConstValue::I16(val as i16),
+        IrType::I32 => ConstValue::I32(val as i32),
+        IrType::I64 => ConstValue::I64(val as i64),
+        IrType::U8 => ConstValue::U8(val as u8),
+        IrType::U16 => ConstValue::U16(val as u16),
+        IrType::U32 => ConstValue::U32(val as u32),
+        IrType::U64 => ConstValue::U64(val),
+        _ => ConstValue::U64(val),
+    }
+}
+
+fn const_to_f64(c: &ConstValue) -> Option<f64> {
+    match c {
+        ConstValue::F32(v) => Some(*v as f64),
+        ConstValue::F64(v) => Some(*v),
+        _ => None,
+    }
+}
+
+fn f64_to_const(val: f64, ty: &IrType) -> ConstValue {
+    match ty {
+        IrType::F32 => ConstValue::F32(val as f32),
+        IrType::F64 => ConstValue::F64(val),
+        _ => ConstValue::F64(val),
+    }
+}
+
+/// Fold a binary operation with constant operands.
