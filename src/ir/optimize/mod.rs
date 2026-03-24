@@ -152,3 +152,179 @@ macro_rules! should_run {
 }
 
 /// Run the full optimization pipeline on an IR module.
+pub fn optimize(module: &mut IrModule, target: Target) {
+    let disabled = disabled_passes();
+    if disabled.contains("all") {
+        return;
+    }
+    let timing = time_passes();
+    let total_start = std::time::Instant::now();
+
+    let nfuncs = module.functions.len();
+
+    // ── Phase 0: Inlining ──────────────────────────────────────────
+    if !disabled.contains("inline") {
+        inline::run_inline(module, timing);
+    }
+
+    // Post-inline cleanup (single pass on all functions)
+    {
+        let mut any_dirty = vec![true; nfuncs];
+        let mut any_changed = vec![false; nfuncs];
+
+        // mem2reg — currently a no-op stub
+        // TODO: full mem2reg implementation
+        run_on_dirty(module, &any_dirty, &mut any_changed, "mem2reg", &disabled, timing, |_f| false);
+
+        // constant_fold
+        run_on_dirty(module, &any_dirty, &mut any_changed, "constfold", &disabled, timing, |f| {
+            constant_fold::constant_fold(f)
+        });
+
+        // copy_prop
+        run_on_dirty(module, &any_dirty, &mut any_changed, "copyprop", &disabled, timing, |f| {
+            copy_prop::copy_prop(f)
+        });
+
+        // simplify
+        run_on_dirty(module, &any_dirty, &mut any_changed, "simplify", &disabled, timing, |f| {
+            simplify::simplify(f)
+        });
+
+        // constant_fold (again)
+        run_on_dirty(module, &any_dirty, &mut any_changed, "constfold", &disabled, timing, |f| {
+            constant_fold::constant_fold(f)
+        });
+
+        // copy_prop (again)
+        run_on_dirty(module, &any_dirty, &mut any_changed, "copyprop", &disabled, timing, |f| {
+            copy_prop::copy_prop(f)
+        });
+
+        // resolve_asm
+        run_on_dirty(module, &any_dirty, &mut any_changed, "resolveasm", &disabled, timing, |f| {
+            resolve_asm::resolve_asm(f)
+        });
+    }
+
+    // ── Phase 0.5: IsConstant Resolution ───────────────────────────
+    // Any remaining IsConstant instructions → 0 (false).
+    // (Currently not applicable since we have no IsConstant IR instruction.)
+
+    // ── Main Loop ──────────────────────────────────────────────────
+    let mut dirty = vec![true; nfuncs];
+    let mut changed = vec![false; nfuncs];
+    let mut prev = PassChanges::new_first_iter();
+    let mut first_iter_baseline = 0usize;
+
+    let is_64bit = matches!(target, Target::X86_64);
+
+    for iteration in 0..MAX_ITERATIONS {
+        let mut cur = PassChanges::default();
+
+        // 1. cfg_simplify (first)
+        if should_run!(prev, cfg_simplify1, constant_fold, dce) {
+            cur.cfg_simplify1 = run_on_dirty(
+                module, &dirty, &mut changed, "cfg", &disabled, timing,
+                |f| cfg_simplify::cfg_simplify(f),
+            );
+        }
+
+        // 2. copy_prop (first)
+        if should_run!(prev, copy_prop1, cfg_simplify1, gvn, licm, if_convert) {
+            cur.copy_prop1 = run_on_dirty(
+                module, &dirty, &mut changed, "copyprop", &disabled, timing,
+                |f| copy_prop::copy_prop(f),
+            );
+        }
+
+        // 2a. div_by_const (iteration 0 only, 64-bit targets only)
+        if iteration == 0 && is_64bit {
+            if should_run!(prev, div_by_const) {
+                cur.div_by_const = run_on_dirty(
+                    module, &dirty, &mut changed, "divconst", &disabled, timing,
+                    |f| div_by_const::div_by_const(f, is_64bit),
+                );
+            }
+        }
+
+        // 2b. narrow
+        if should_run!(prev, narrow, copy_prop1) {
+            cur.narrow = run_on_dirty(
+                module, &dirty, &mut changed, "narrow", &disabled, timing,
+                |f| narrow::narrow(f),
+            );
+        }
+
+        // 3. simplify
+        if should_run!(prev, simplify, copy_prop1, narrow) {
+            cur.simplify = run_on_dirty(
+                module, &dirty, &mut changed, "simplify", &disabled, timing,
+                |f| simplify::simplify(f),
+            );
+        }
+
+        // 4. constant_fold
+        if should_run!(prev, constant_fold, copy_prop1, narrow, simplify, if_convert, copy_prop2) {
+            cur.constant_fold = run_on_dirty(
+                module, &dirty, &mut changed, "constfold", &disabled, timing,
+                |f| constant_fold::constant_fold(f),
+            );
+        }
+
+        // 5-6a. gvn + licm + ivsr (shared CFG analysis)
+        {
+            let run_gvn = should_run!(prev, gvn, cfg_simplify1, copy_prop1, simplify);
+            let run_licm = should_run!(prev, licm, cfg_simplify1, copy_prop1, gvn);
+            let run_ivsr = iteration == 0;
+
+            if run_gvn || run_licm || run_ivsr {
+                let start = std::time::Instant::now();
+                for i in 0..module.functions.len() {
+                    if module.functions[i].blocks.is_empty() || !dirty[i] {
+                        continue;
+                    }
+                    let (g, l, v) = gvn_licm_ivsr_shared(
+                        &mut module.functions[i],
+                        run_gvn && !disabled.contains("gvn"),
+                        run_licm && !disabled.contains("licm"),
+                        run_ivsr && !disabled.contains("ivsr"),
+                    );
+                    if g { cur.gvn += 1; changed[i] = true; }
+                    if l { cur.licm += 1; changed[i] = true; }
+                    if v { cur.ivsr += 1; changed[i] = true; }
+                }
+                if timing {
+                    let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+                    if cur.gvn + cur.licm + cur.ivsr > 0 {
+                        eprintln!(
+                            "[OPT] gvn+licm+ivsr: {:.3}ms (gvn={}, licm={}, ivsr={})",
+                            elapsed, cur.gvn, cur.licm, cur.ivsr
+                        );
+                    }
+                }
+            }
+        }
+
+        // 7. if_convert
+        if should_run!(prev, if_convert, cfg_simplify1, constant_fold) {
+            cur.if_convert = run_on_dirty(
+                module, &dirty, &mut changed, "ifconv", &disabled, timing,
+                |f| if_convert::if_convert(f),
+            );
+        }
+
+        // 8. copy_prop (second round)
+        if should_run!(prev, copy_prop2, gvn, licm, if_convert)
+            || cur.simplify > 0
+            || cur.constant_fold > 0
+        {
+            cur.copy_prop2 = run_on_dirty(
+                module, &dirty, &mut changed, "copyprop", &disabled, timing,
+                |f| copy_prop::copy_prop(f),
+            );
+        }
+
+        // 9. dce
+        if should_run!(prev, dce, gvn, licm, if_convert, copy_prop2) {
+            cur.dce = run_on_dirty(
