@@ -801,3 +801,93 @@ fn print_verbose_version(driver: &Driver) {
 
 // ── Tests ──────────────────────────────────────────────────────────────
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> (Driver, bool) {
+        let mut d = Driver::new();
+        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        let early = parse_cli_args(&mut d, "cc1", &args).unwrap();
+        (d, early)
+    }
+
+    fn parse_err(args: &[&str]) -> String {
+        let mut d = Driver::new();
+        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        parse_cli_args(&mut d, "cc1", &args).unwrap_err()
+    }
+
+    #[test]
+    fn test_basic_input_file() {
+        let (d, early) = parse(&["test.c"]);
+        assert!(!early);
+        assert_eq!(d.input_files, vec!["test.c"]);
+        assert_eq!(d.mode, CompileMode::Full);
+    }
+
+    #[test]
+    fn test_mode_selection() {
+        let (d, _) = parse(&["-E", "test.c"]);
+        assert_eq!(d.mode, CompileMode::PreprocessOnly);
+
+        let (d, _) = parse(&["-S", "test.c"]);
+        assert_eq!(d.mode, CompileMode::AssemblyOnly);
+
+        let (d, _) = parse(&["-c", "test.c"]);
+        assert_eq!(d.mode, CompileMode::ObjectOnly);
+    }
+
+    #[test]
+    fn test_output_path() {
+        let (d, _) = parse(&["-o", "out.o", "-c", "test.c"]);
+        assert_eq!(d.output_path, "out.o");
+        assert!(d.output_path_set);
+
+        let (d, _) = parse(&["-oout.o", "-c", "test.c"]);
+        assert_eq!(d.output_path, "out.o");
+    }
+
+    #[test]
+    fn test_target_override() {
+        let (d, _) = parse(&["-m32", "test.c"]);
+        assert_eq!(d.target, Target::I386);
+
+        let (d, _) = parse(&["-m64", "test.c"]);
+        assert_eq!(d.target, Target::X86_64);
+    }
+
+    #[test]
+    fn test_optimization_flags() {
+        let (d, _) = parse(&["-O2", "test.c"]);
+        assert!(d.optimize);
+        assert!(!d.optimize_size);
+
+        let (d, _) = parse(&["-Os", "test.c"]);
+        assert!(d.optimize);
+        assert!(d.optimize_size);
+
+        let (d, _) = parse(&["-O0", "test.c"]);
+        assert!(!d.optimize);
+    }
+
+    #[test]
+    fn test_defines() {
+        let (d, _) = parse(&["-DFOO", "-DBAR=42", "-D", "BAZ", "test.c"]);
+        assert_eq!(d.defines.len(), 3);
+        assert_eq!(d.defines[0].name, "FOO");
+        assert!(d.defines[0].value.is_none());
+        assert_eq!(d.defines[1].name, "BAR");
+        assert_eq!(d.defines[1].value.as_deref(), Some("42"));
+        assert_eq!(d.defines[2].name, "BAZ");
+    }
+
+    #[test]
+    fn test_include_paths() {
+        let (d, _) = parse(&["-I/usr/include", "-I", "/opt/include", "-iquote", ".", "test.c"]);
+        assert_eq!(d.include_paths, vec!["/usr/include", "/opt/include"]);
+        assert_eq!(d.quote_include_paths, vec!["."]);
+    }
+
+    #[test]
+    fn test_warning_flags() {
