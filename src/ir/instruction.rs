@@ -439,6 +439,36 @@ impl Instruction {
             Instruction::Copy { src, .. } => f(src),
             Instruction::Phi { incoming, .. } => {
                 for (_, op) in incoming {
+                    f(op);
+                }
+            }
+            Instruction::AtomicLoad { addr, .. } => f(addr),
+            Instruction::AtomicStore { addr, value, .. } => {
+                f(addr);
+                f(value);
+            }
+            Instruction::AtomicRmw { addr, value, .. } => {
+                f(addr);
+                f(value);
+            }
+            Instruction::AtomicCmpxchg {
+                addr,
+                expected,
+                desired,
+                ..
+            } => {
+                f(addr);
+                f(expected);
+                f(desired);
+            }
+            Instruction::StackRestore { saved_sp } => f(saved_sp),
+            Instruction::InlineAsm { operands, .. } => {
+                for (op, _) in operands {
+                    f(op);
+                }
+            }
+        }
+    }
     }
 }
 
