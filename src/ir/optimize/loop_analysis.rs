@@ -246,3 +246,83 @@ fn dominates(a: usize, b: usize, idom: &[BlockId]) -> bool {
     cur == a // Final check at entry
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::instruction::{Instruction, Terminator};
+    use crate::ir::types::*;
+
+    #[test]
+    fn test_cfg_analysis_simple_loop() {
+        let mut f = IrFunction::new("test", IrType::Void, Linkage::External);
+        let b0 = f.create_block("entry");
+        let b1 = f.create_block("loop.header");
+        let b2 = f.create_block("loop.body");
+        let b3 = f.create_block("exit");
+
+        let cond = f.alloc_value();
+        f.block_mut(b0).set_terminator(Terminator::Br { target: b1 });
+        f.block_mut(b1).set_terminator(Terminator::CondBr {
+            cond: Operand::Value(cond),
+            true_bb: b2,
+            false_bb: b3,
+        });
+        f.block_mut(b2).set_terminator(Terminator::Br { target: b1 });
+        f.block_mut(b3).set_terminator(Terminator::Ret { value: None });
+
+        let cfg = CfgAnalysis::build(&f);
+        assert!(!cfg.loops.is_empty());
+        assert_eq!(cfg.loops[0].header, b1);
+        assert!(cfg.loops[0].body.contains(&b1));
+        assert!(cfg.loops[0].body.contains(&b2));
+        assert!(!cfg.loops[0].body.contains(&b0));
+        assert!(!cfg.loops[0].body.contains(&b3));
+    }
+
+    #[test]
+    fn test_cfg_analysis_no_loop() {
+        let mut f = IrFunction::new("test", IrType::Void, Linkage::External);
+        let b0 = f.create_block("entry");
+        let b1 = f.create_block("exit");
+
+        f.block_mut(b0).set_terminator(Terminator::Br { target: b1 });
+        f.block_mut(b1).set_terminator(Terminator::Ret { value: None });
+
+        let cfg = CfgAnalysis::build(&f);
+        assert!(cfg.loops.is_empty());
+    }
+
+    #[test]
+    fn test_dominators() {
+        // Simple: 0 -> 1 -> 2
+        let preds = vec![vec![], vec![BlockId(0)], vec![BlockId(1)]];
+        let succs = vec![vec![BlockId(1)], vec![BlockId(2)], vec![]];
+        let idom = compute_dominators(3, &preds, &succs);
+        assert_eq!(idom[0], BlockId(0));
+        assert_eq!(idom[1], BlockId(0));
+        assert_eq!(idom[2], BlockId(1));
+    }
+
+    #[test]
+    fn test_preheader_detection() {
+        let mut f = IrFunction::new("test", IrType::Void, Linkage::External);
+        let b0 = f.create_block("preheader");
+        let b1 = f.create_block("header");
+        let b2 = f.create_block("body");
+        let b3 = f.create_block("exit");
+
+        let cond = f.alloc_value();
+        f.block_mut(b0).set_terminator(Terminator::Br { target: b1 });
+        f.block_mut(b1).set_terminator(Terminator::CondBr {
+            cond: Operand::Value(cond),
+            true_bb: b2,
+            false_bb: b3,
+        });
+        f.block_mut(b2).set_terminator(Terminator::Br { target: b1 });
+        f.block_mut(b3).set_terminator(Terminator::Ret { value: None });
+
+        let cfg = CfgAnalysis::build(&f);
+        assert!(!cfg.loops.is_empty());
+        assert_eq!(cfg.loops[0].preheader, Some(b0));
+    }
+}
