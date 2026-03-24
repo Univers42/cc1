@@ -465,3 +465,43 @@ mod tests {
     }
 
     #[test]
+    fn test_thread_jump_chain() {
+        let mut f = IrFunction::new("test", IrType::Void, Linkage::External);
+        let b0 = f.create_block("entry");
+        let b1 = f.create_block("trampoline1");
+        let b2 = f.create_block("trampoline2");
+        let b3 = f.create_block("exit");
+
+        f.block_mut(b0).set_terminator(Terminator::Br { target: b1 });
+        f.block_mut(b1).set_terminator(Terminator::Br { target: b2 });
+        f.block_mut(b2).set_terminator(Terminator::Br { target: b3 });
+        f.block_mut(b3).set_terminator(Terminator::Ret { value: None });
+
+        assert!(cfg_simplify(&mut f));
+        // Entry should go directly to exit (or at least skip trampolines)
+    }
+
+    #[test]
+    fn test_merge_single_pred() {
+        let mut f = IrFunction::new("test", IrType::I32, Linkage::External);
+        let b0 = f.create_block("entry");
+        let b1 = f.create_block("next");
+
+        let v0 = f.alloc_value();
+        f.block_mut(b0).set_terminator(Terminator::Br { target: b1 });
+        f.block_mut(b1).push(Instruction::BinOp {
+            result: v0,
+            op: BinOpKind::Add,
+            lhs: Operand::Const(ConstValue::I32(1)),
+            rhs: Operand::Const(ConstValue::I32(2)),
+            ty: IrType::I32,
+        });
+        f.block_mut(b1).set_terminator(Terminator::Ret {
+            value: Some(Operand::Value(v0)),
+        });
+
+        assert!(cfg_simplify(&mut f));
+        // b0 should now contain b1's instructions (merged)
+        assert!(!f.block(b0).insts.is_empty());
+    }
+}
