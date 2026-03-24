@@ -88,3 +88,58 @@ pub fn copy_prop(func: &mut IrFunction) -> bool {
                     match &copy_map[cur_idx] {
                         Some(Operand::Value(v)) if *v != current => {
                             chain.push(cur_idx);
+                            current = *v;
+                            depth += 1;
+                        }
+                        Some(Operand::Const(_))
+                        | Some(Operand::Global(_))
+                        | Some(Operand::Label(_)) => {
+                            let resolved = copy_map[cur_idx].clone().unwrap();
+                            // Path compression: update all entries in chain
+                            for &ci in &chain {
+                                copy_map[ci] = Some(resolved.clone());
+                            }
+                            return resolved;
+                        }
+                        _ => break,
+                    }
+                }
+                let resolved = Operand::Value(current);
+                // Path compression
+                for &ci in &chain {
+                    copy_map[ci] = Some(resolved.clone());
+                }
+                resolved
+            }
+        }
+    }
+
+    // Second pass: replace operands in all instructions and terminators.
+    let mut changed = false;
+
+    for block in &mut func.blocks {
+        for inst in &mut block.insts {
+            inst.for_each_operand_mut(|op| {
+                if let Operand::Value(v) = op {
+                    let resolved = resolve(&mut copy_map, *v);
+                    if resolved != *op {
+                        *op = resolved;
+                        changed = true;
+                    }
+                }
+            });
+        }
+        block.terminator.for_each_operand_mut(|op| {
+            if let Operand::Value(v) = op {
+                let resolved = resolve(&mut copy_map, *v);
+                if resolved != *op {
+                    *op = resolved;
+                    changed = true;
+                }
+            }
+        });
+    }
+
+    changed
+}
+
