@@ -129,3 +129,101 @@ fn build_def_map(func: &IrFunction) -> HashMap<ValueId, (usize, usize)> {
     map
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::instruction::Terminator;
+    use crate::ir::module::IrFunction;
+
+    #[test]
+    fn test_resolve_global_addr() {
+        let mut f = IrFunction::new("test", IrType::Void, Linkage::External);
+        let b = f.create_block("entry");
+
+        let g_addr = f.alloc_value();
+        let asm_result = f.alloc_value();
+
+        f.block_mut(b).push(Instruction::GlobalAddr {
+            result: g_addr,
+            name: "my_global".to_string(),
+        });
+        f.block_mut(b).push(Instruction::InlineAsm {
+            result: asm_result,
+            template: "mov $0, %%rax".to_string(),
+            constraints: "r".to_string(),
+            operands: vec![(Operand::Value(g_addr), IrType::Ptr)],
+            has_side_effects: true,
+            align_stack: false,
+        });
+        f.block_mut(b).set_terminator(Terminator::Ret { value: None });
+
+        let changed = resolve_asm(&mut f);
+        assert!(changed);
+
+        // The asm operand should now reference the global directly.
+        match &f.blocks[0].insts[1] {
+            Instruction::InlineAsm { operands, .. } => {
+                assert!(matches!(&operands[0].0, Operand::Global(g) if g == "my_global"));
+            }
+            _ => panic!("Expected InlineAsm"),
+        }
+    }
+
+    #[test]
+    fn test_resolve_through_copy() {
+        let mut f = IrFunction::new("test", IrType::Void, Linkage::External);
+        let b = f.create_block("entry");
+
+        let g_addr = f.alloc_value();
+        let copy_v = f.alloc_value();
+        let asm_result = f.alloc_value();
+
+        f.block_mut(b).push(Instruction::GlobalAddr {
+            result: g_addr,
+            name: "sym".to_string(),
+        });
+        f.block_mut(b).push(Instruction::Copy {
+            result: copy_v,
+            src: Operand::Value(g_addr),
+        });
+        f.block_mut(b).push(Instruction::InlineAsm {
+            result: asm_result,
+            template: "nop".to_string(),
+            constraints: "r".to_string(),
+            operands: vec![(Operand::Value(copy_v), IrType::Ptr)],
+            has_side_effects: true,
+            align_stack: false,
+        });
+        f.block_mut(b).set_terminator(Terminator::Ret { value: None });
+
+        let changed = resolve_asm(&mut f);
+        assert!(changed);
+
+        match &f.blocks[0].insts[2] {
+            Instruction::InlineAsm { operands, .. } => {
+                assert!(matches!(&operands[0].0, Operand::Global(g) if g == "sym"));
+            }
+            _ => panic!("Expected InlineAsm"),
+        }
+    }
+
+    #[test]
+    fn test_no_change_already_resolved() {
+        let mut f = IrFunction::new("test", IrType::Void, Linkage::External);
+        let b = f.create_block("entry");
+        let asm_result = f.alloc_value();
+
+        f.block_mut(b).push(Instruction::InlineAsm {
+            result: asm_result,
+            template: "nop".to_string(),
+            constraints: "".to_string(),
+            operands: vec![(Operand::Global("already".to_string()), IrType::Ptr)],
+            has_side_effects: true,
+            align_stack: false,
+        });
+        f.block_mut(b).set_terminator(Terminator::Ret { value: None });
+
+        let changed = resolve_asm(&mut f);
+        assert!(!changed);
+    }
+}
