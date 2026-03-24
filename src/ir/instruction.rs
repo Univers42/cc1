@@ -477,6 +477,31 @@ impl Instruction {
             Instruction::Store { .. }
                 | Instruction::Call { .. }
                 | Instruction::CallIndirect { .. }
+                | Instruction::Alloca { .. }
+                | Instruction::DynAlloca { .. }
+                | Instruction::AtomicStore { .. }
+                | Instruction::AtomicRmw { .. }
+                | Instruction::AtomicCmpxchg { .. }
+                | Instruction::StackRestore { .. }
+                | Instruction::InlineAsm { .. }
+        )
+    }
+
+    /// Returns true if this instruction is pure (no side effects, safe to hoist/CSE).
+    pub fn is_pure(&self) -> bool {
+        matches!(
+            self,
+            Instruction::BinOp { .. }
+                | Instruction::UnaryOp { .. }
+                | Instruction::Icmp { .. }
+                | Instruction::Fcmp { .. }
+                | Instruction::Cast { .. }
+                | Instruction::GetElementPtr { .. }
+                | Instruction::GlobalAddr { .. }
+                | Instruction::Copy { .. }
+                | Instruction::Select { .. }
+        )
+    }
     }
 }
 
