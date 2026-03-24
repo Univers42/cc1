@@ -200,3 +200,104 @@ pub fn assemble_source_file_gcc(
 // ── Assembler argument construction ────────────────────────────────────
 
 /// Build RISC-V-specific assembler flags.
+pub fn build_asm_extra_args(driver: &Driver) -> Vec<String> {
+    let mut args = Vec::new();
+
+    // RISC-V: -mabi, -march, -mno-relax, -fno-pic
+    if let Some(ref abi) = driver.riscv_abi {
+        args.push(format!("-Wa,-mabi={}", abi));
+    }
+    if let Some(ref march) = driver.riscv_march {
+        args.push(format!("-Wa,-march={}", march));
+    }
+    if driver.riscv_no_relax {
+        args.push("-Wa,-mno-relax".into());
+    }
+    if !driver.pic {
+        args.push("-Wa,-fno-pic".into());
+    }
+
+    args
+}
+
+// ── Linker argument construction ───────────────────────────────────────
+
+/// Build the ordered list of linker arguments.
+///
+/// Returns (flags, positional_items) where:
+///   - flags: order-independent flags (-nostdlib, -shared, -static, -L paths)
+///   - positional_items: ordered object files, -l flags, -Wl, pass-through
+#[allow(dead_code)]
+pub fn build_linker_args(driver: &Driver) -> (Vec<String>, Vec<String>) {
+    let mut flags = Vec::new();
+    let mut items = Vec::new();
+
+    // Order-independent flags.
+    if driver.relocatable {
+        flags.push("-nostdlib".into());
+    }
+    if driver.shared_lib {
+        flags.push("-shared".into());
+    }
+    if driver.static_link {
+        flags.push("-static".into());
+    }
+    if driver.nostdlib {
+        flags.push("-nostdlib".into());
+    }
+    for p in &driver.linker_paths {
+        flags.push(format!("-L{}", p));
+    }
+
+    // Positional items from linker_ordered_items.
+    for item in &driver.linker_ordered_items {
+        items.push(item.clone());
+    }
+
+    (flags, items)
+}
+
+// ── Dependency file generation ─────────────────────────────────────────
+
+/// Write a Make-compatible dependency file.
+///
+/// Format: `target: source\n`
+/// Currently minimal — lists only the source file as a dependency,
+/// not included headers. Sufficient for Linux kernel's fixdep processing.
+#[allow(dead_code)]
+pub fn write_dep_file(
+    dep_path: &str,
+    target: &str,
+    source: &str,
+) -> Result<(), String> {
+    let content = format!("{}: {}\n", target, source);
+    std::fs::write(dep_path, &content)
+        .map_err(|e| format!("cannot write dependency file '{}': {}", dep_path, e))
+}
+
+/// Derive the dependency file path from the output path.
+#[allow(dead_code)]
+pub fn derive_dep_path(output: &str) -> String {
+    if let Some(dot) = output.rfind('.') {
+        format!("{}.d", &output[..dot])
+    } else {
+        format!("{}.d", output)
+    }
+}
+
+// ── Environment variable helpers ───────────────────────────────────────
+
+/// Check if CCC_KEEP_ASM is set (preserve intermediate .s files).
+#[allow(dead_code)]
+pub fn keep_asm_files() -> bool {
+    std::env::var("CCC_KEEP_ASM").is_ok()
+}
+
+/// Check if CCC_ASM_DEBUG is set (dump preprocessed assembly).
+#[allow(dead_code)]
+pub fn asm_debug() -> bool {
+    std::env::var("CCC_ASM_DEBUG").is_ok()
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────
+
