@@ -154,3 +154,82 @@ fn collect_global_init_refs(init: &crate::ir::module::GlobalInit, refs: &mut Vec
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::instruction::Terminator;
+    use crate::ir::module::{IrFunction, IrModule};
+    use crate::ir::types::*;
+
+    #[test]
+    fn test_remove_dead_internal() {
+        let mut module = IrModule::new("test");
+
+        // External function (root).
+        let mut main_fn = IrFunction::new("main", IrType::I32, Linkage::External);
+        let b = main_fn.create_block("entry");
+        main_fn.block_mut(b).set_terminator(Terminator::Ret {
+            value: Some(Operand::Const(ConstValue::I32(0))),
+        });
+        module.functions.push(main_fn);
+
+        // Internal function not called by anyone.
+        let mut dead_fn = IrFunction::new("dead", IrType::Void, Linkage::Internal);
+        let b2 = dead_fn.create_block("entry");
+        dead_fn.block_mut(b2).set_terminator(Terminator::Ret { value: None });
+        module.functions.push(dead_fn);
+
+        assert_eq!(module.functions.len(), 2);
+        let changed = dead_statics(&mut module);
+        assert!(changed);
+        assert_eq!(module.functions.len(), 1);
+        assert_eq!(module.functions[0].name, "main");
+    }
+
+    #[test]
+    fn test_keep_called_internal() {
+        let mut module = IrModule::new("test");
+
+        // callee (internal but called)
+        let mut callee = IrFunction::new("helper", IrType::I32, Linkage::Internal);
+        let b = callee.create_block("entry");
+        callee.block_mut(b).set_terminator(Terminator::Ret {
+            value: Some(Operand::Const(ConstValue::I32(42))),
+        });
+        module.functions.push(callee);
+
+        // caller (external)
+        let mut caller = IrFunction::new("main", IrType::I32, Linkage::External);
+        let b2 = caller.create_block("entry");
+        let v = caller.alloc_value();
+        caller.block_mut(b2).push(Instruction::Call {
+            result: v,
+            callee: "helper".to_string(),
+            args: vec![],
+            ret_ty: IrType::I32,
+            is_variadic: false,
+        });
+        caller.block_mut(b2).set_terminator(Terminator::Ret {
+            value: Some(Operand::Value(v)),
+        });
+        module.functions.push(caller);
+
+        let changed = dead_statics(&mut module);
+        assert!(!changed);
+        assert_eq!(module.functions.len(), 2);
+    }
+
+    #[test]
+    fn test_keep_external() {
+        let mut module = IrModule::new("test");
+
+        let mut ext_fn = IrFunction::new("api_func", IrType::Void, Linkage::External);
+        let b = ext_fn.create_block("entry");
+        ext_fn.block_mut(b).set_terminator(Terminator::Ret { value: None });
+        module.functions.push(ext_fn);
+
+        let changed = dead_statics(&mut module);
+        assert!(!changed);
+        assert_eq!(module.functions.len(), 1);
+    }
+}
