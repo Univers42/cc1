@@ -160,3 +160,89 @@ fn compute_rpo(n: usize, succs: &[Vec<BlockId>]) -> Vec<usize> {
 }
 
 /// Detect natural loops.
+fn detect_loops(
+    n: usize,
+    preds: &[Vec<BlockId>],
+    succs: &[Vec<BlockId>],
+    idom: &[BlockId],
+) -> Vec<NaturalLoop> {
+    let mut loops_map: HashMap<BlockId, NaturalLoop> = HashMap::new();
+
+    // Find back edges: tail -> header where header dominates tail.
+    for tail in 0..n {
+        for succ in &succs[tail] {
+            let header = succ.0 as usize;
+            if header < n && dominates(header, tail, idom) {
+                let header_bid = BlockId(header as u32);
+                let tail_bid = BlockId(tail as u32);
+
+                let entry = loops_map.entry(header_bid).or_insert_with(|| NaturalLoop {
+                    header: header_bid,
+                    body: HashSet::new(),
+                    preheader: None,
+                    latches: Vec::new(),
+                });
+                entry.latches.push(tail_bid);
+            }
+        }
+    }
+
+    // Compute loop bodies and preheaders.
+    for (_, nl) in loops_map.iter_mut() {
+        // Compute body via reverse BFS from latches.
+        nl.body.insert(nl.header);
+        let mut worklist: VecDeque<BlockId> = VecDeque::new();
+        for latch in &nl.latches {
+            if !nl.body.contains(latch) {
+                nl.body.insert(*latch);
+                worklist.push_back(*latch);
+            }
+        }
+        while let Some(b) = worklist.pop_front() {
+            let bi = b.0 as usize;
+            if bi < preds.len() {
+                for p in &preds[bi] {
+                    if !nl.body.contains(p) {
+                        nl.body.insert(*p);
+                        worklist.push_back(*p);
+                    }
+                }
+            }
+        }
+
+        // Find preheader: single predecessor of header outside the loop.
+        let header_idx = nl.header.0 as usize;
+        if header_idx < preds.len() {
+            let outside_preds: Vec<BlockId> = preds[header_idx]
+                .iter()
+                .filter(|p| !nl.body.contains(p))
+                .copied()
+                .collect();
+            if outside_preds.len() == 1 {
+                nl.preheader = Some(outside_preds[0]);
+            }
+        }
+    }
+
+    // Collect and sort innermost-first (smaller body first).
+    let mut loops: Vec<NaturalLoop> = loops_map.into_values().collect();
+    loops.sort_by_key(|l| l.body.len());
+    loops
+}
+
+/// Check if `a` dominates `b` by walking up the dominator tree.
+fn dominates(a: usize, b: usize, idom: &[BlockId]) -> bool {
+    let mut cur = b;
+    loop {
+        if cur == a {
+            return true;
+        }
+        let parent = idom[cur].0 as usize;
+        if parent == cur {
+            break; // Reached entry
+        }
+        cur = parent;
+    }
+    cur == a // Final check at entry
+}
+
