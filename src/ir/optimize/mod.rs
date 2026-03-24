@@ -328,3 +328,115 @@ pub fn optimize(module: &mut IrModule, target: Target) {
         // 9. dce
         if should_run!(prev, dce, gvn, licm, if_convert, copy_prop2) {
             cur.dce = run_on_dirty(
+                module, &dirty, &mut changed, "dce", &disabled, timing,
+                |f| dce::dce(f),
+            );
+        }
+
+        // 10. cfg_simplify (second round)
+        if should_run!(prev, cfg_simplify2, constant_fold, if_convert, dce) {
+            cur.cfg_simplify2 = run_on_dirty(
+                module, &dirty, &mut changed, "cfg", &disabled, timing,
+                |f| cfg_simplify::cfg_simplify(f),
+            );
+        }
+
+        // 10.5. ipcp (interprocedural)
+        if !disabled.contains("ipcp") {
+            if ipcp::ipcp(module) {
+                cur.ipcp = 1;
+                // Mark all functions dirty for next iteration
+                for c in changed.iter_mut() {
+                    *c = true;
+                }
+            }
+        }
+
+        // ── End of iteration bookkeeping ───────────────────────────
+        let iter_total = cur.total_excluding_dce();
+
+        if iteration == 0 {
+            first_iter_baseline = iter_total;
+        }
+
+        // Swap dirty/changed
+        std::mem::swap(&mut dirty, &mut changed);
+        changed.iter_mut().for_each(|c| *c = false);
+
+        // Check for fixed point
+        if iter_total == 0 && cur.dce == 0 && cur.ipcp == 0 {
+            if timing {
+                eprintln!("[OPT] Fixed point reached after {} iteration(s)", iteration + 1);
+            }
+            break;
+        }
+
+        // Diminishing returns check (after at least 2 iterations)
+        if iteration >= 1 && first_iter_baseline > 0 {
+            let ratio = iter_total as f64 / first_iter_baseline as f64;
+            if ratio < DIMINISHING_RETURNS_RATIO && cur.ipcp == 0 {
+                if timing {
+                    eprintln!(
+                        "[OPT] Diminishing returns ({:.1}%) after {} iteration(s)",
+                        ratio * 100.0,
+                        iteration + 1
+                    );
+                }
+                break;
+            }
+        }
+
+        prev = cur;
+    }
+
+    // ── Phase 11: Dead Static Elimination ──────────────────────────
+    if !disabled.contains("deadstatics") {
+        dead_statics::dead_statics(module);
+    }
+
+    if timing {
+        eprintln!(
+            "[OPT] Total optimization: {:.3}ms",
+            total_start.elapsed().as_secs_f64() * 1000.0
+        );
+    }
+}
+
+/// Run GVN, LICM, and IVSR with shared CFG analysis on a single function.
+fn gvn_licm_ivsr_shared(
+    func: &mut crate::ir::module::IrFunction,
+    run_gvn: bool,
+    run_licm: bool,
+    run_ivsr: bool,
+) -> (bool, bool, bool) {
+    let mut gvn_changed = false;
+    let mut licm_changed = false;
+    let mut ivsr_changed = false;
+
+    // For single-block functions, only GVN runs (fast path).
+    if func.blocks.len() <= 1 {
+        if run_gvn {
+            gvn_changed = gvn::gvn(func);
+        }
+        return (gvn_changed, false, false);
+    }
+
+    // Build shared CFG analysis
+    func.compute_predecessors();
+    let cfg = loop_analysis::CfgAnalysis::build(func);
+
+    if run_gvn {
+        gvn_changed = gvn::gvn(func);
+    }
+
+    if run_licm {
+        licm_changed = licm::licm(func, &cfg);
+    }
+
+    if run_ivsr && !cfg.loops.is_empty() {
+        ivsr_changed = iv_strength_reduce::iv_strength_reduce(func, &cfg);
+    }
+
+    (gvn_changed, licm_changed, ivsr_changed)
+}
+
