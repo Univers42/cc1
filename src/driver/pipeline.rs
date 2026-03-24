@@ -498,3 +498,103 @@ impl Driver {
         Ok(())
     }
 
+    /// Default: Compile + assemble + link → executable.
+    fn run_full(&self) -> Result<(), String> {
+        let mut temp_objects: Vec<TempFile> = Vec::new();
+        let mut link_objects: Vec<Vec<u8>> = Vec::new();
+        let mut passthrough_paths: Vec<String> = Vec::new();
+        let mut need_start_stub = true;
+
+        for input in &self.input_files {
+            if super::file_types::is_c_source(input)
+                || matches!(self.explicit_language.as_deref(), Some("c"))
+            {
+                // C source → compile → assemble → temp .o
+                let mut asm = self.compile_to_assembly(input)?;
+
+                // Inject _start stub into the first compiled object so that
+                // cross-object symbol resolution isn't needed for `call main`.
+                if need_start_stub && !self.nostdlib && !self.shared_lib && !self.relocatable {
+                    let stub = self.generate_start_stub();
+                    asm = format!("{}{}", stub, asm);
+                    need_start_stub = false;
+                }
+
+                let obj_bytes = self.assemble_text(&asm)?;
+
+                let temp_path = derive_temp_path(input, ".o");
+                std::fs::write(&temp_path, &obj_bytes)
+                    .map_err(|e| format!("cannot write temp object '{}': {}", temp_path, e))?;
+
+                let tf = TempFile::new(temp_path);
+                link_objects.push(obj_bytes);
+                temp_objects.push(tf);
+            } else if super::file_types::is_assembly_source(input)
+                || super::file_types::is_explicit_assembly(self.explicit_language.as_deref())
+            {
+                // Assembly source → assemble → temp .o
+                let obj_bytes = self.assemble_source(input)?;
+
+                let temp_path = derive_temp_path(input, ".o");
+                std::fs::write(&temp_path, &obj_bytes)
+                    .map_err(|e| format!("cannot write temp object '{}': {}", temp_path, e))?;
+
+                let tf = TempFile::new(temp_path);
+                link_objects.push(obj_bytes);
+                temp_objects.push(tf);
+            } else if super::file_types::is_object_or_archive(input) {
+                // Object/archive → pass through to linker.
+                passthrough_paths.push(input.clone());
+            } else if super::file_types::looks_like_binary_object(input) {
+                // Unknown extension but ELF/ar magic → pass through.
+                passthrough_paths.push(input.clone());
+            } else {
+                return Err(format!(
+                    "don't know what to do with '{}' (use -x to specify language)",
+                    input
+                ));
+            }
+        }
+
+        // Also collect ordered linker items from -l, -Wl,, etc.
+        for item in &self.linker_ordered_items {
+            if item.starts_with("-l") || item.starts_with("-Wl,") || item.starts_with("-") {
+                // Linker flag — passed through
+                passthrough_paths.push(item.clone());
+            } else if super::file_types::is_object_or_archive(item)
+                || super::file_types::looks_like_binary_object(item)
+            {
+                passthrough_paths.push(item.clone());
+            }
+        }
+
+        // Read passthrough objects into memory for the builtin linker.
+        for path in &passthrough_paths {
+            // Skip linker flags (they start with -)
+            if path.starts_with('-') {
+                continue;
+            }
+            match std::fs::read(path) {
+                Ok(data) => link_objects.push(data),
+                Err(e) => return Err(format!("cannot read '{}': {}", path, e)),
+            }
+        }
+
+        if link_objects.is_empty() {
+            return Err("no input files to link".into());
+        }
+
+        // Verbose mode: print synthetic link line for CMake compatibility.
+        if self.verbose {
+            let mut link_line = String::from("/usr/bin/ld");
+            for p in &self.linker_paths {
+                link_line.push_str(&format!(" -L{}", p));
+            }
+            for p in &passthrough_paths {
+                link_line.push_str(&format!(" {}", p));
+            }
+            eprintln!("{}", link_line);
+        }
+
+        // If no C source was compiled, the start stub hasn't been injected yet.
+        // Assemble it as a standalone object.
