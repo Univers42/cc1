@@ -356,3 +356,120 @@ fn fold_unaryop(op: UnaryOpKind, val: &ConstValue, ty: &IrType) -> Option<ConstV
 }
 
 /// Fold an integer comparison with constant operands.
+fn fold_icmp(pred: IcmpPred, lhs: &ConstValue, rhs: &ConstValue, _ty: &IrType) -> Option<ConstValue> {
+    let l = const_to_i64(lhs)?;
+    let r = const_to_i64(rhs)?;
+    let lu = const_to_u64(lhs)?;
+    let ru = const_to_u64(rhs)?;
+
+    let result = match pred {
+        IcmpPred::Eq => l == r,
+        IcmpPred::Ne => l != r,
+        IcmpPred::Slt => l < r,
+        IcmpPred::Sgt => l > r,
+        IcmpPred::Sle => l <= r,
+        IcmpPred::Sge => l >= r,
+        IcmpPred::Ult => lu < ru,
+        IcmpPred::Ugt => lu > ru,
+        IcmpPred::Ule => lu <= ru,
+        IcmpPred::Uge => lu >= ru,
+    };
+
+    Some(ConstValue::I8(if result { 1 } else { 0 }))
+}
+
+/// Fold a float comparison.
+fn fold_fcmp(pred: FcmpPred, lhs: &ConstValue, rhs: &ConstValue) -> Option<ConstValue> {
+    let l = const_to_f64(lhs)?;
+    let r = const_to_f64(rhs)?;
+
+    let result = match pred {
+        FcmpPred::Oeq => l == r && !l.is_nan() && !r.is_nan(),
+        FcmpPred::One => l != r && !l.is_nan() && !r.is_nan(),
+        FcmpPred::Olt => l < r,
+        FcmpPred::Ogt => l > r,
+        FcmpPred::Ole => l <= r,
+        FcmpPred::Oge => l >= r,
+        FcmpPred::Ord => !l.is_nan() && !r.is_nan(),
+        FcmpPred::Uno => l.is_nan() || r.is_nan(),
+        FcmpPred::Ueq => l == r || l.is_nan() || r.is_nan(),
+        FcmpPred::Une => l != r || l.is_nan() || r.is_nan(),
+        FcmpPred::Ult => l < r || l.is_nan() || r.is_nan(),
+        FcmpPred::Ugt => l > r || l.is_nan() || r.is_nan(),
+        FcmpPred::Ule => l <= r || l.is_nan() || r.is_nan(),
+        FcmpPred::Uge => l >= r || l.is_nan() || r.is_nan(),
+    };
+
+    Some(ConstValue::I8(if result { 1 } else { 0 }))
+}
+
+/// Fold a type cast with a constant operand.
+fn fold_cast(kind: CastKind, val: &ConstValue, src_ty: &IrType, dst_ty: &IrType) -> Option<ConstValue> {
+    match kind {
+        CastKind::ZExt => {
+            let v = const_to_u64(val)?;
+            Some(u64_to_const(v, dst_ty))
+        }
+        CastKind::SExt => {
+            let v = const_to_i64(val)?;
+            Some(i64_to_const(v, dst_ty))
+        }
+        CastKind::Trunc => {
+            let v = const_to_u64(val)?;
+            Some(truncate_const(&u64_to_const(v, dst_ty), dst_ty))
+        }
+        CastKind::FPToSI => {
+            let v = const_to_f64(val)?;
+            if v.is_nan() || v.is_infinite() {
+                return None; // Safety: don't fold NaN/Inf to int
+            }
+            Some(i64_to_const(v as i64, dst_ty))
+        }
+        CastKind::FPToUI => {
+            let v = const_to_f64(val)?;
+            if v.is_nan() || v.is_infinite() || v < 0.0 {
+                return None;
+            }
+            Some(u64_to_const(v as u64, dst_ty))
+        }
+        CastKind::SIToFP => {
+            let v = const_to_i64(val)?;
+            Some(f64_to_const(v as f64, dst_ty))
+        }
+        CastKind::UIToFP => {
+            let v = const_to_u64(val)?;
+            Some(f64_to_const(v as f64, dst_ty))
+        }
+        CastKind::FPExt => {
+            let v = const_to_f64(val)?;
+            Some(f64_to_const(v, dst_ty))
+        }
+        CastKind::FPTrunc => {
+            let v = const_to_f64(val)?;
+            Some(f64_to_const(v, dst_ty))
+        }
+        CastKind::PtrToInt => {
+            if matches!(val, ConstValue::NullPtr) {
+                Some(u64_to_const(0, dst_ty))
+            } else {
+                None
+            }
+        }
+        CastKind::IntToPtr => {
+            let v = const_to_u64(val)?;
+            if v == 0 {
+                Some(ConstValue::NullPtr)
+            } else {
+                None
+            }
+        }
+        CastKind::Bitcast => {
+            if src_ty == dst_ty {
+                Some(val.clone())
+            } else {
+                None
+            }
+        }
+    }
+}
+
