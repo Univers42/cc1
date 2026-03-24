@@ -137,3 +137,55 @@ pub fn gvn(func: &mut IrFunction) -> bool {
 }
 
 /// Create an expression key for an instruction (for CSE).
+fn make_expr_key(inst: &Instruction) -> Option<ExprKey> {
+    match inst {
+        Instruction::BinOp { op, lhs, rhs, ty, .. } => {
+            let (l, r) = match (lhs, rhs) {
+                (Operand::Value(l), Operand::Value(r)) => {
+                    // Commutative canonicalization
+                    if is_commutative(*op) && l.0 > r.0 {
+                        (*r, *l)
+                    } else {
+                        (*l, *r)
+                    }
+                }
+                _ => return None, // Skip constants for simplicity
+            };
+            Some(ExprKey::BinOp { op: *op, lhs: l, rhs: r, ty: ty.clone() })
+        }
+        Instruction::UnaryOp { op, operand: Operand::Value(v), ty, .. } => {
+            Some(ExprKey::UnaryOp { op: *op, operand: *v, ty: ty.clone() })
+        }
+        Instruction::Icmp { pred, lhs: Operand::Value(l), rhs: Operand::Value(r), .. } => {
+            Some(ExprKey::Icmp { pred: *pred, lhs: *l, rhs: *r })
+        }
+        Instruction::Fcmp { pred, lhs: Operand::Value(l), rhs: Operand::Value(r), .. } => {
+            Some(ExprKey::Fcmp { pred: *pred, lhs: *l, rhs: *r })
+        }
+        Instruction::Cast { kind, src: Operand::Value(v), src_ty, dst_ty, .. } => {
+            // Exclude 128-bit types
+            if matches!(src_ty, IrType::I128 | IrType::U128) || matches!(dst_ty, IrType::I128 | IrType::U128) {
+                return None;
+            }
+            Some(ExprKey::Cast { kind: *kind, src: *v, src_ty: src_ty.clone(), dst_ty: dst_ty.clone() })
+        }
+        Instruction::GetElementPtr { base: Operand::Value(b), offset: Operand::Value(o), elem_ty, .. } => {
+            Some(ExprKey::Gep { base: *b, offset: *o, elem_ty: elem_ty.clone() })
+        }
+        _ => None,
+    }
+}
+
+fn is_commutative(op: BinOpKind) -> bool {
+    matches!(
+        op,
+        BinOpKind::Add
+            | BinOpKind::Mul
+            | BinOpKind::And
+            | BinOpKind::Or
+            | BinOpKind::Xor
+            | BinOpKind::FAdd
+            | BinOpKind::FMul
+    )
+}
+
