@@ -301,3 +301,58 @@ pub fn asm_debug() -> bool {
 
 // ── Tests ──────────────────────────────────────────────────────────────
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::driver::pipeline::Driver;
+
+    #[test]
+    fn test_build_asm_extra_args_empty() {
+        let d = Driver::new();
+        assert!(build_asm_extra_args(&d).is_empty() || build_asm_extra_args(&d).contains(&"-Wa,-fno-pic".into()));
+    }
+
+    #[test]
+    fn test_build_asm_extra_args_riscv() {
+        let mut d = Driver::new();
+        d.riscv_abi = Some("lp64".into());
+        d.riscv_march = Some("rv64imac".into());
+        d.riscv_no_relax = true;
+        let args = build_asm_extra_args(&d);
+        assert!(args.contains(&"-Wa,-mabi=lp64".into()));
+        assert!(args.contains(&"-Wa,-march=rv64imac".into()));
+        assert!(args.contains(&"-Wa,-mno-relax".into()));
+    }
+
+    #[test]
+    fn test_build_linker_args() {
+        let mut d = Driver::new();
+        d.static_link = true;
+        d.linker_paths.push("/usr/lib".into());
+        d.linker_ordered_items.push("-lfoo".into());
+        d.linker_ordered_items.push("bar.o".into());
+
+        let (flags, items) = build_linker_args(&d);
+        assert!(flags.iter().any(|f| f == "-static"));
+        assert!(flags.iter().any(|f| f == "-L/usr/lib"));
+        assert_eq!(items, vec!["-lfoo", "bar.o"]);
+    }
+
+    #[test]
+    fn test_derive_dep_path() {
+        assert_eq!(derive_dep_path("foo.o"), "foo.d");
+        assert_eq!(derive_dep_path("a/b/c.o"), "a/b/c.d");
+        assert_eq!(derive_dep_path("noext"), "noext.d");
+    }
+
+    #[test]
+    fn test_write_dep_file() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("test_dep.d");
+        let path_str = path.to_str().unwrap();
+        write_dep_file(path_str, "foo.o", "foo.c").unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "foo.o: foo.c\n");
+        let _ = std::fs::remove_file(&path);
+    }
+}
