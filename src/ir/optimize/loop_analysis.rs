@@ -77,3 +77,86 @@ impl CfgAnalysis {
 }
 
 /// Compute immediate dominators using simple iterative algorithm.
+fn compute_dominators(n: usize, preds: &[Vec<BlockId>], _succs: &[Vec<BlockId>]) -> Vec<BlockId> {
+    // RPO numbering
+    let rpo = compute_rpo(n, _succs);
+    let mut rpo_num = vec![usize::MAX; n];
+    for (i, &b) in rpo.iter().enumerate() {
+        rpo_num[b] = i;
+    }
+
+    let mut idom = vec![BlockId(u32::MAX); n];
+    idom[0] = BlockId(0); // Entry dominates itself.
+
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for &b in &rpo[1..] {
+            // Find first processed predecessor
+            let mut new_idom: Option<usize> = None;
+            for p in &preds[b] {
+                let pi = p.0 as usize;
+                if idom[pi].0 != u32::MAX {
+                    new_idom = Some(match new_idom {
+                        None => pi,
+                        Some(current) => intersect(current, pi, &idom, &rpo_num),
+                    });
+                }
+            }
+            if let Some(ni) = new_idom {
+                let new_bid = BlockId(ni as u32);
+                if idom[b] != new_bid {
+                    idom[b] = new_bid;
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    idom
+}
+
+fn intersect(
+    mut b1: usize,
+    mut b2: usize,
+    idom: &[BlockId],
+    rpo_num: &[usize],
+) -> usize {
+    while b1 != b2 {
+        while rpo_num[b1] > rpo_num[b2] {
+            b1 = idom[b1].0 as usize;
+        }
+        while rpo_num[b2] > rpo_num[b1] {
+            b2 = idom[b2].0 as usize;
+        }
+    }
+    b1
+}
+
+/// Compute reverse postorder.
+fn compute_rpo(n: usize, succs: &[Vec<BlockId>]) -> Vec<usize> {
+    let mut visited = vec![false; n];
+    let mut postorder = Vec::with_capacity(n);
+
+    fn dfs(
+        b: usize,
+        succs: &[Vec<BlockId>],
+        visited: &mut [bool],
+        postorder: &mut Vec<usize>,
+    ) {
+        visited[b] = true;
+        for s in &succs[b] {
+            let si = s.0 as usize;
+            if si < visited.len() && !visited[si] {
+                dfs(si, succs, visited, postorder);
+            }
+        }
+        postorder.push(b);
+    }
+
+    dfs(0, succs, &mut visited, &mut postorder);
+    postorder.reverse();
+    postorder
+}
+
+/// Detect natural loops.
