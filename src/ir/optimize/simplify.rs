@@ -333,3 +333,167 @@ fn is_all_ones(op: &Operand, ty: &IrType) -> bool {
 }
 
 #[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::instruction::Terminator;
+
+    fn make_binop_func(op: BinOpKind, lhs: Operand, rhs: Operand, ty: IrType) -> IrFunction {
+        let mut f = IrFunction::new("test", IrType::I32, Linkage::External);
+        let b = f.create_block("entry");
+        let v0 = f.alloc_value();
+        f.block_mut(b).push(Instruction::BinOp {
+            result: v0,
+            op,
+            lhs,
+            rhs,
+            ty,
+        });
+        f.block_mut(b).set_terminator(Terminator::Ret {
+            value: Some(Operand::Value(v0)),
+        });
+        f
+    }
+
+    #[test]
+    fn test_add_zero() {
+        let v = ValueId(99);  // pretend this exists
+        let mut f = IrFunction::new("test", IrType::I32, Linkage::External);
+        let b = f.create_block("entry");
+        // Allocate enough values
+        for _ in 0..100 { f.alloc_value(); }
+        let v0 = f.alloc_value();
+        f.block_mut(b).push(Instruction::BinOp {
+            result: v0,
+            op: BinOpKind::Add,
+            lhs: Operand::Value(v),
+            rhs: Operand::Const(ConstValue::I32(0)),
+            ty: IrType::I32,
+        });
+        f.block_mut(b).set_terminator(Terminator::Ret {
+            value: Some(Operand::Value(v0)),
+        });
+
+        let changed = simplify(&mut f);
+        assert!(changed);
+    }
+
+    #[test]
+    fn test_sub_self() {
+        let mut f = IrFunction::new("test", IrType::I32, Linkage::External);
+        let b = f.create_block("entry");
+        let v0 = f.alloc_value();
+        let v1 = f.alloc_value();
+        f.block_mut(b).push(Instruction::BinOp {
+            result: v0,
+            op: BinOpKind::Add,
+            lhs: Operand::Const(ConstValue::I32(1)),
+            rhs: Operand::Const(ConstValue::I32(2)),
+            ty: IrType::I32,
+        });
+        f.block_mut(b).push(Instruction::BinOp {
+            result: v1,
+            op: BinOpKind::Sub,
+            lhs: Operand::Value(v0),
+            rhs: Operand::Value(v0),
+            ty: IrType::I32,
+        });
+        f.block_mut(b).set_terminator(Terminator::Ret {
+            value: Some(Operand::Value(v1)),
+        });
+
+        let changed = simplify(&mut f);
+        assert!(changed);
+        // v1 should become Copy of 0
+        if let Instruction::Copy { src: Operand::Const(ConstValue::I32(0)), .. } = &f.block(b).insts[1] {
+            // ok
+        } else {
+            panic!("Expected 0");
+        }
+    }
+
+    #[test]
+    fn test_select_same() {
+        let mut f = IrFunction::new("test", IrType::I32, Linkage::External);
+        let b = f.create_block("entry");
+        let v0 = f.alloc_value();
+        let v1 = f.alloc_value();
+        f.block_mut(b).push(Instruction::BinOp {
+            result: v0,
+            op: BinOpKind::Add,
+            lhs: Operand::Const(ConstValue::I32(1)),
+            rhs: Operand::Const(ConstValue::I32(2)),
+            ty: IrType::I32,
+        });
+        f.block_mut(b).push(Instruction::Select {
+            result: v1,
+            cond: Operand::Const(ConstValue::I8(1)),
+            true_val: Operand::Value(v0),
+            false_val: Operand::Value(v0),
+            ty: IrType::I32,
+        });
+        f.block_mut(b).set_terminator(Terminator::Ret {
+            value: Some(Operand::Value(v1)),
+        });
+
+        let changed = simplify(&mut f);
+        assert!(changed);
+    }
+
+    #[test]
+    fn test_gep_zero() {
+        let mut f = IrFunction::new("test", IrType::Ptr, Linkage::External);
+        let b = f.create_block("entry");
+        let v0 = f.alloc_value();
+        let v1 = f.alloc_value();
+        f.block_mut(b).push(Instruction::Alloca {
+            result: v0,
+            ty: IrType::I32,
+            align: 4,
+        });
+        f.block_mut(b).push(Instruction::GetElementPtr {
+            result: v1,
+            base: Operand::Value(v0),
+            offset: Operand::Const(ConstValue::I64(0)),
+            elem_ty: IrType::I8,
+        });
+        f.block_mut(b).set_terminator(Terminator::Ret {
+            value: Some(Operand::Value(v1)),
+        });
+
+        let changed = simplify(&mut f);
+        assert!(changed);
+    }
+
+    #[test]
+    fn test_self_compare() {
+        let mut f = IrFunction::new("test", IrType::I32, Linkage::External);
+        let b = f.create_block("entry");
+        let v0 = f.alloc_value();
+        let v1 = f.alloc_value();
+        f.block_mut(b).push(Instruction::BinOp {
+            result: v0,
+            op: BinOpKind::Add,
+            lhs: Operand::Const(ConstValue::I32(1)),
+            rhs: Operand::Const(ConstValue::I32(2)),
+            ty: IrType::I32,
+        });
+        f.block_mut(b).push(Instruction::Icmp {
+            result: v1,
+            pred: IcmpPred::Eq,
+            lhs: Operand::Value(v0),
+            rhs: Operand::Value(v0),
+            ty: IrType::I32,
+        });
+        f.block_mut(b).set_terminator(Terminator::Ret {
+            value: Some(Operand::Value(v1)),
+        });
+
+        let changed = simplify(&mut f);
+        assert!(changed);
+        if let Instruction::Copy { src: Operand::Const(ConstValue::I8(1)), .. } = &f.block(b).insts[1] {
+            // ok
+        } else {
+            panic!("Expected true");
+        }
+    }
+}
