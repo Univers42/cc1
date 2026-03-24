@@ -390,3 +390,78 @@ fn resolve_cond_const(op: &Operand) -> Option<i64> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_fold_constant_condbr() {
+        let mut f = IrFunction::new("test", IrType::Void, Linkage::External);
+        let b0 = f.create_block("entry");
+        let b1 = f.create_block("then");
+        let b2 = f.create_block("else");
+
+        f.block_mut(b0).set_terminator(Terminator::CondBr {
+            cond: Operand::Const(ConstValue::I8(1)),
+            true_bb: b1,
+            false_bb: b2,
+        });
+        f.block_mut(b1).set_terminator(Terminator::Ret { value: None });
+        f.block_mut(b2).set_terminator(Terminator::Ret { value: None });
+
+        assert!(cfg_simplify(&mut f));
+        // After folding and merging, b0 should eventually reach a Ret
+        // (either still Br to b1, or merged with b1 into Ret directly)
+        match &f.block(b0).terminator {
+            Terminator::Br { target } => assert_eq!(*target, b1),
+            Terminator::Ret { .. } => {} // merged
+            other => panic!("Unexpected terminator: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_remove_dead_block() {
+        let mut f = IrFunction::new("test", IrType::Void, Linkage::External);
+        let b0 = f.create_block("entry");
+        let b1 = f.create_block("dead");
+        let b2 = f.create_block("exit");
+
+        f.block_mut(b0).set_terminator(Terminator::Br { target: b2 });
+        f.block_mut(b1).set_terminator(Terminator::Ret { value: None }); // unreachable
+        f.block_mut(b2).set_terminator(Terminator::Ret { value: None });
+
+        assert!(cfg_simplify(&mut f));
+        // b1 should be cleared
+        assert!(f.block(b1).insts.is_empty());
+        assert!(matches!(f.block(b1).terminator, Terminator::Unreachable));
+    }
+
+    #[test]
+    fn test_trivial_phi() {
+        let mut f = IrFunction::new("test", IrType::I32, Linkage::External);
+        let b0 = f.create_block("entry");
+        let v0 = f.alloc_value();
+        let v1 = f.alloc_value();
+
+        f.block_mut(b0).push(Instruction::BinOp {
+            result: v0,
+            op: BinOpKind::Add,
+            lhs: Operand::Const(ConstValue::I32(1)),
+            rhs: Operand::Const(ConstValue::I32(2)),
+            ty: IrType::I32,
+        });
+        f.block_mut(b0).push(Instruction::Phi {
+            result: v1,
+            ty: IrType::I32,
+            incoming: vec![(BlockId(0), Operand::Value(v0))],
+        });
+        f.block_mut(b0).set_terminator(Terminator::Ret {
+            value: Some(Operand::Value(v1)),
+        });
+
+        assert!(cfg_simplify(&mut f));
+        // The phi should be simplified to a Copy
+        assert!(matches!(f.block(b0).insts[1], Instruction::Copy { .. }));
+    }
+
+    #[test]
