@@ -176,3 +176,90 @@ fn simplify_binop(
     None
 }
 
+fn simplify_icmp(pred: IcmpPred, lhs: &Operand, rhs: &Operand, _ty: &IrType) -> Option<Operand> {
+    // Self-comparison (integer only)
+    if lhs == rhs {
+        let result = match pred {
+            IcmpPred::Eq | IcmpPred::Sle | IcmpPred::Sge | IcmpPred::Ule | IcmpPred::Uge => true,
+            IcmpPred::Ne | IcmpPred::Slt | IcmpPred::Sgt | IcmpPred::Ult | IcmpPred::Ugt => false,
+        };
+        return Some(Operand::Const(ConstValue::I8(if result { 1 } else { 0 })));
+    }
+
+    // Unsigned-zero simplifications
+    if let Some(rv) = const_u64(rhs) {
+        if rv == 0 {
+            match pred {
+                // x <u 0 => always false
+                IcmpPred::Ult => return Some(Operand::Const(ConstValue::I8(0))),
+                // x >=u 0 => always true
+                IcmpPred::Uge => return Some(Operand::Const(ConstValue::I8(1))),
+                _ => {}
+            }
+        }
+    }
+
+    None
+}
+
+fn simplify_cast(
+    kind: CastKind,
+    src: &Operand,
+    src_ty: &IrType,
+    dst_ty: &IrType,
+    _blocks: &[crate::ir::module::BasicBlock],
+    _defs: &HashMap<ValueId, (usize, usize)>,
+) -> Option<Operand> {
+    // Identity cast: Cast(x, T -> T) => Copy(x)
+    if src_ty == dst_ty {
+        return Some(src.clone());
+    }
+
+    None
+}
+
+fn simplify_select(cond: &Operand, true_val: &Operand, false_val: &Operand) -> Option<Operand> {
+    // select cond, x, x => x
+    if true_val == false_val {
+        return Some(true_val.clone());
+    }
+    // select const(0), a, b => b
+    if let Some(cv) = const_i64(cond) {
+        if cv == 0 {
+            return Some(false_val.clone());
+        } else {
+            return Some(true_val.clone());
+        }
+    }
+    None
+}
+
+fn simplify_gep(base: &Operand, offset: &Operand) -> Option<Operand> {
+    // GEP(base, 0) => Copy(base)
+    if let Some(0) = const_i64(offset) {
+        return Some(base.clone());
+    }
+    None
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────
+
+fn const_i64(op: &Operand) -> Option<i64> {
+    match op {
+        Operand::Const(c) => match c {
+            ConstValue::I8(v) => Some(*v as i64),
+            ConstValue::I16(v) => Some(*v as i64),
+            ConstValue::I32(v) => Some(*v as i64),
+            ConstValue::I64(v) => Some(*v),
+            ConstValue::U8(v) => Some(*v as i64),
+            ConstValue::U16(v) => Some(*v as i64),
+            ConstValue::U32(v) => Some(*v as i64),
+            ConstValue::U64(v) => Some(*v as i64),
+            ConstValue::NullPtr => Some(0),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn const_u64(op: &Operand) -> Option<u64> {
