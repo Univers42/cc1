@@ -131,3 +131,62 @@ pub fn strip_line_markers(text: &str) -> String {
 
 // ── Tests ──────────────────────────────────────────────────────────────
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_standard_object_extensions() {
+        assert!(is_object_or_archive("foo.o"));
+        assert!(is_object_or_archive("path/to/libfoo.a"));
+        assert!(is_object_or_archive("libfoo.so"));
+    }
+
+    #[test]
+    fn test_nonstandard_object_extensions() {
+        assert!(is_object_or_archive("foo.os"));
+        assert!(is_object_or_archive("foo.od"));
+        assert!(is_object_or_archive("foo.lo"));
+        assert!(is_object_or_archive("foo.obj"));
+    }
+
+    #[test]
+    fn test_versioned_shared_libraries() {
+        assert!(is_object_or_archive("libfoo.so.1"));
+        assert!(is_object_or_archive("libfoo.so.1.2.3"));
+        assert!(is_object_or_archive("libfoo.so.42"));
+    }
+
+    #[test]
+    fn test_suffixed_static_archives() {
+        assert!(is_object_or_archive("libfoo.a.xyzzy"));
+        assert!(is_object_or_archive("/path/to/lib.a.suffix"));
+    }
+
+    #[test]
+    fn test_non_object_files() {
+        assert!(!is_object_or_archive("foo.c"));
+        assert!(!is_object_or_archive("foo.s"));
+        assert!(!is_object_or_archive("foo.h"));
+        assert!(!is_object_or_archive("foo.rs"));
+    }
+
+    #[test]
+    fn test_c_source_detection() {
+        assert!(is_c_source("foo.c"));
+        assert!(is_c_source("path/to/bar.h"));
+        assert!(is_c_source("baz.i"));
+        assert!(!is_c_source("foo.s"));
+        assert!(!is_c_source("foo.o"));
+    }
+
+    #[test]
+    fn test_assembly_source_detection() {
+        assert!(is_assembly_source("foo.s"));
+        assert!(is_assembly_source("foo.S"));
+        assert!(is_assembly_with_cpp("foo.S"));
+        assert!(!is_assembly_with_cpp("foo.s"));
+        assert!(!is_assembly_source("foo.c"));
+    }
+
+    #[test]
