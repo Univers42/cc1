@@ -157,3 +157,44 @@ fn is_hoistable(
     all_invariant
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::instruction::Terminator;
+    use crate::ir::types::*;
+
+    #[test]
+    fn test_licm_hoist_constant() {
+        let mut f = IrFunction::new("test", IrType::Void, Linkage::External);
+        let b0 = f.create_block("preheader");
+        let b1 = f.create_block("header");
+        let b2 = f.create_block("body");
+        let b3 = f.create_block("exit");
+
+        let cond = f.alloc_value();
+        let v0 = f.alloc_value(); // loop-invariant: add of two constants
+
+        f.block_mut(b0).set_terminator(Terminator::Br { target: b1 });
+        f.block_mut(b1).set_terminator(Terminator::CondBr {
+            cond: Operand::Value(cond),
+            true_bb: b2,
+            false_bb: b3,
+        });
+        f.block_mut(b2).push(Instruction::BinOp {
+            result: v0,
+            op: BinOpKind::Add,
+            lhs: Operand::Const(ConstValue::I32(1)),
+            rhs: Operand::Const(ConstValue::I32(2)),
+            ty: IrType::I32,
+        });
+        f.block_mut(b2).set_terminator(Terminator::Br { target: b1 });
+        f.block_mut(b3).set_terminator(Terminator::Ret { value: None });
+
+        let cfg = CfgAnalysis::build(&f);
+        let changed = licm(&mut f, &cfg);
+        assert!(changed);
+        // The instruction should be moved to the preheader
+        assert!(!f.block(b0).insts.is_empty());
+        assert!(f.block(b2).insts.is_empty());
+    }
+}
