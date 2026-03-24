@@ -280,3 +280,121 @@ pub struct Driver {
     pub(super) raw_args: Vec<String>,
 }
 
+impl Driver {
+    /// Create a new Driver with sensible defaults.
+    pub fn new() -> Self {
+        Self {
+            target: Target::X86_64,
+            output_path: "a.out".into(),
+            output_path_set: false,
+            input_files: Vec::new(),
+            mode: CompileMode::Full,
+
+            opt_level: 2,
+            optimize: false,
+            optimize_size: false,
+
+            defines: Vec::new(),
+            include_paths: Vec::new(),
+            quote_include_paths: Vec::new(),
+            isystem_include_paths: Vec::new(),
+            after_include_paths: Vec::new(),
+            force_includes: Vec::new(),
+            undef_macros: Vec::new(),
+            undef_all: false,
+            gnu_extensions: true,
+            gnu89_inline: false,
+            nostdinc: false,
+            suppress_line_markers: false,
+            dump_defines: false,
+            explicit_language: None,
+
+            debug_info: false,
+            pic: false,
+            function_return_thunk: false,
+            indirect_branch_thunk: false,
+            patchable_function_entry: None,
+            cf_protection_branch: false,
+            no_sse: false,
+            enable_sse3: false,
+            enable_ssse3: false,
+            enable_sse4_1: false,
+            enable_sse4_2: false,
+            enable_avx: false,
+            enable_avx2: false,
+            general_regs_only: false,
+            code_model_kernel: false,
+            no_jump_tables: false,
+            function_sections: false,
+            data_sections: false,
+            code16gcc: false,
+            regparm: 0,
+            omit_frame_pointer: false,
+            no_unwind_tables: false,
+            fcommon: false,
+
+            riscv_abi: None,
+            riscv_march: None,
+            riscv_no_relax: false,
+
+            linker_paths: Vec::new(),
+            linker_ordered_items: Vec::new(),
+            static_link: false,
+            shared_lib: false,
+            nostdlib: false,
+            relocatable: false,
+
+            warning_config: WarningConfig::new(),
+            color_mode: ColorMode::Auto,
+            verbose: false,
+
+            dep_file: None,
+            dep_only: false,
+            dep_target: None,
+
+            pthread: false,
+            assembler_extra_args: Vec::new(),
+            raw_args: Vec::new(),
+        }
+    }
+
+    // ── Public API ─────────────────────────────────────────────────
+
+    /// Check if there are any input files.
+    pub fn has_input_files(&self) -> bool {
+        !self.input_files.is_empty()
+    }
+
+    /// Build CodegenOptions from current driver configuration.
+    pub fn codegen_options(&self) -> CodegenOptions {
+        CodegenOptions {
+            pic: self.pic || self.shared_lib,
+            function_return_thunk: self.function_return_thunk,
+            indirect_branch_thunk: self.indirect_branch_thunk,
+            patchable_function_entry: self.patchable_function_entry,
+            cf_protection_branch: self.cf_protection_branch,
+            no_sse: self.no_sse,
+            general_regs_only: self.general_regs_only,
+            code_model_kernel: self.code_model_kernel,
+            no_jump_tables: self.no_jump_tables,
+            no_relax: self.riscv_no_relax,
+            debug_info: self.debug_info,
+            function_sections: self.function_sections,
+            data_sections: self.data_sections,
+            code16gcc: self.code16gcc,
+            regparm: self.regparm,
+            omit_frame_pointer: self.omit_frame_pointer,
+            emit_cfi: !self.no_unwind_tables,
+        }
+    }
+
+    /// Main entry point — dispatch to the appropriate pipeline.
+    pub fn run(&self) -> Result<(), String> {
+        match self.mode {
+            CompileMode::PreprocessOnly => self.run_preprocess_only(),
+            CompileMode::AssemblyOnly => self.run_assembly_only(),
+            CompileMode::ObjectOnly => self.run_object_only(),
+            CompileMode::Full => self.run_full(),
+        }
+    }
+
