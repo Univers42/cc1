@@ -1038,3 +1038,31 @@ mod tests {
         let (d, _) = parse(&["-shared", "test.c"]);
         assert!(d.shared_lib);
     }
+
+    #[test]
+    fn test_nostdlib() {
+        let (d, _) = parse(&["-nostdlib", "test.c"]);
+        assert!(d.nostdlib);
+    }
+
+    #[test]
+    fn test_x_language_override() {
+        let (d, _) = parse(&["-x", "assembler-with-cpp", "test.S"]);
+        assert_eq!(d.explicit_language.as_deref(), Some("assembler-with-cpp"));
+    }
+
+    #[test]
+    fn test_x_none_resets() {
+        let (d, _) = parse(&["-x", "c", "-x", "none", "test.c"]);
+        assert!(d.explicit_language.is_none());
+    }
+
+    #[test]
+    fn test_color_mode() {
+        let (d, _) = parse(&["-fdiagnostics-color=always", "test.c"]);
+        assert_eq!(d.color_mode, ColorMode::Always);
+
+        let (d, _) = parse(&["-fdiagnostics-color=never", "test.c"]);
+        assert_eq!(d.color_mode, ColorMode::Never);
+    }
+}
