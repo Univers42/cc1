@@ -190,3 +190,26 @@ mod tests {
     }
 
     #[test]
+    fn test_explicit_assembly() {
+        assert!(is_explicit_assembly(Some("assembler")));
+        assert!(is_explicit_assembly(Some("assembler-with-cpp")));
+        assert!(!is_explicit_assembly(Some("c")));
+        assert!(!is_explicit_assembly(None));
+    }
+
+    #[test]
+    fn test_strip_line_markers() {
+        let input = "# 1 \"test.c\"\nint x;\n# 2 \"test.c\"\nint y;\n";
+        let result = strip_line_markers(input);
+        assert_eq!(result, "int x;\nint y;\n");
+    }
+
+    #[test]
+    fn test_strip_line_markers_preserves_pragmas() {
+        // # pragma should NOT be stripped (it doesn't start with a digit)
+        let input = "# pragma once\nint x;\n# 1 \"test.c\"\nint y;\n";
+        let result = strip_line_markers(input);
+        assert!(result.contains("# pragma once"));
+        assert!(!result.contains("# 1 \"test.c\""));
+    }
+}
