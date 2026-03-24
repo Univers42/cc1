@@ -103,3 +103,197 @@ fn detect_diamond(
 }
 
 /// Try converting a diamond pattern to selects.
+fn try_convert_diamond(
+    func: &mut IrFunction,
+    cond_bi: usize,
+    true_bb: BlockId,
+    false_bb: BlockId,
+    merge_bi: usize,
+    cond: &Operand,
+) -> bool {
+    let ti = true_bb.0 as usize;
+    let fi = false_bb.0 as usize;
+
+    // Check arm sizes and side effects.
+    if !is_arm_convertible(&func.blocks[ti].insts) {
+        return false;
+    }
+    if !is_arm_convertible(&func.blocks[fi].insts) {
+        return false;
+    }
+
+    // Reject 128-bit types.
+    for inst in &func.blocks[ti].insts {
+        if let Some(ty) = result_type(inst) {
+            if is_wide_type(&ty) {
+                return false;
+            }
+        }
+    }
+    for inst in &func.blocks[fi].insts {
+        if let Some(ty) = result_type(inst) {
+            if is_wide_type(&ty) {
+                return false;
+            }
+        }
+    }
+
+    // Collect instructions from both arms.
+    let true_insts = func.blocks[ti].insts.clone();
+    let false_insts = func.blocks[fi].insts.clone();
+
+    // Convert phis in the merge block to selects.
+    let merge_block = &func.blocks[merge_bi];
+    let mut new_insts = Vec::new();
+
+    for inst in &merge_block.insts {
+        if let Instruction::Phi { result, ty, incoming } = inst {
+            // Find incoming values from true and false arms.
+            let true_val = incoming.iter()
+                .find(|(b, _)| *b == true_bb)
+                .map(|(_, op)| op.clone());
+            let false_val = incoming.iter()
+                .find(|(b, _)| *b == false_bb)
+                .map(|(_, op)| op.clone());
+
+            if let (Some(tv), Some(fv)) = (true_val, false_val) {
+                new_insts.push(Instruction::Select {
+                    result: *result,
+                    cond: cond.clone(),
+                    true_val: tv,
+                    false_val: fv,
+                    ty: ty.clone(),
+                });
+            } else {
+                return false; // Can't convert this phi.
+            }
+        }
+    }
+
+    // If we got here, do the conversion:
+    // 1. Move arm instructions into the cond block.
+    let cond_block = &mut func.blocks[cond_bi];
+    cond_block.insts.extend(true_insts);
+    cond_block.insts.extend(false_insts);
+    cond_block.insts.extend(new_insts);
+
+    // 2. Set cond block terminator to branch directly to merge.
+    let merge_bid = BlockId(merge_bi as u32);
+    func.blocks[cond_bi].terminator = Terminator::Br { target: merge_bid };
+
+    // 3. Clear the dead arm blocks.
+    func.blocks[ti].insts.clear();
+    func.blocks[ti].terminator = Terminator::Unreachable;
+    func.blocks[fi].insts.clear();
+    func.blocks[fi].terminator = Terminator::Unreachable;
+
+    // 4. Remove phis in merge block that were converted.
+    func.blocks[merge_bi].insts.retain(|inst| {
+        !matches!(inst, Instruction::Phi { .. })
+    });
+
+    true
+}
+
+/// Try converting a triangle pattern.
+fn try_convert_triangle(
+    func: &mut IrFunction,
+    preds: &[Vec<usize>],
+    cond_bi: usize,
+    true_bb: BlockId,
+    false_bb: BlockId,
+    cond: &Operand,
+) -> bool {
+    let ti = true_bb.0 as usize;
+    let fi = false_bb.0 as usize;
+
+    // Pattern: cond → true_bb, cond → false_bb, true_bb → false_bb
+    // So false_bb serves as the merge.
+    if ti < func.blocks.len() {
+        if let Terminator::Br { target } = &func.blocks[ti].terminator {
+            if *target == false_bb && preds.get(ti).map_or(false, |p| p.len() == 1) {
+                if is_arm_convertible(&func.blocks[ti].insts)
+                    && !func.blocks[ti].insts.iter().any(|i| result_type(i).map_or(false, |t| is_wide_type(&t)))
+                {
+                    // Convert phis in false_bb
+                    let phis: Vec<_> = func.blocks[fi].insts.iter()
+                        .filter(|i| matches!(i, Instruction::Phi { .. }))
+                        .cloned()
+                        .collect();
+
+                    let mut selects = Vec::new();
+                    for inst in &phis {
+                        if let Instruction::Phi { result, ty, incoming } = inst {
+                            let from_true = incoming.iter()
+                                .find(|(b, _)| *b == true_bb)
+                                .map(|(_, op)| op.clone());
+                            let from_cond = incoming.iter()
+                                .find(|(b, _)| b.0 as usize == cond_bi)
+                                .map(|(_, op)| op.clone());
+
+                            if let (Some(tv), Some(fv)) = (from_true, from_cond) {
+                                selects.push(Instruction::Select {
+                                    result: *result,
+                                    cond: cond.clone(),
+                                    true_val: tv,
+                                    false_val: fv,
+                                    ty: ty.clone(),
+                                });
+                            } else {
+                                return false;
+                            }
+                        }
+                    }
+
+                    // Perform conversion
+                    let arm_insts = func.blocks[ti].insts.clone();
+                    func.blocks[cond_bi].insts.extend(arm_insts);
+                    func.blocks[cond_bi].insts.extend(selects);
+                    func.blocks[cond_bi].terminator = Terminator::Br { target: false_bb };
+
+                    func.blocks[ti].insts.clear();
+                    func.blocks[ti].terminator = Terminator::Unreachable;
+
+                    func.blocks[fi].insts.retain(|i| !matches!(i, Instruction::Phi { .. }));
+
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
+}
+
+/// Check if an arm's instructions are convertible (pure, small).
+fn is_arm_convertible(insts: &[Instruction]) -> bool {
+    if insts.len() > MAX_ARM_INSTRS {
+        return false;
+    }
+    for inst in insts {
+        if inst.has_side_effects() {
+            return false;
+        }
+        // Also reject phis in the arm (shouldn't happen in single-pred block).
+        if matches!(inst, Instruction::Phi { .. }) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Get the result type of an instruction if it produces a value.
+fn result_type(inst: &Instruction) -> Option<IrType> {
+    if inst.result().is_some() {
+        let ty = inst.result_type();
+        if ty.is_void() { None } else { Some(ty) }
+    } else {
+        None
+    }
+}
+
+/// Check if a type is too wide for select (I128/U128/F128).
+fn is_wide_type(ty: &IrType) -> bool {
+    matches!(ty, IrType::I128 | IrType::U128)
+}
+
