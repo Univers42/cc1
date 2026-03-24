@@ -598,3 +598,103 @@ impl Driver {
 
         // If no C source was compiled, the start stub hasn't been injected yet.
         // Assemble it as a standalone object.
+        if need_start_stub && !self.nostdlib && !self.shared_lib && !self.relocatable {
+            let stub = self.generate_start_stub();
+            let stub_obj = self.assemble_text(&stub)?;
+            // Prepend so _start is found before main.
+            link_objects.insert(0, stub_obj);
+        }
+
+        // Link into executable.
+        let exe_bytes = crate::backend::native::linker::link(&link_objects, self.target);
+
+        std::fs::write(&self.output_path, &exe_bytes)
+            .map_err(|e| format!("cannot write to '{}': {}", self.output_path, e))?;
+
+        // Make the output executable.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o755);
+            let _ = std::fs::set_permissions(&self.output_path, perms);
+        }
+
+        if self.verbose {
+            eprintln!("cc1: wrote executable to '{}'", self.output_path);
+        }
+
+        // temp_objects are cleaned up when they drop here
+        drop(temp_objects);
+        Ok(())
+    }
+
+    // ── Core compilation pipeline ──────────────────────────────────
+
+    /// Compile a C source file to target-specific assembly text.
+    ///
+    /// This is the heart of the driver. The pipeline has 9 phases:
+    ///   1. Preprocessor (TODO: not yet implemented, source read directly)
+    ///   2. Lexer
+    ///   3. Parser
+    ///   4. Sema
+    ///   5. Lowerer (AST → alloca-based IR)
+    ///   6. mem2reg (TODO: promote allocas to SSA)
+    ///   7. Optimization (TODO: constant fold, DCE, GVN, etc.)
+    ///   8. Phi elimination (TODO: SSA phi nodes → Copy instructions)
+    ///   9. Codegen (IR → target-specific assembly text)
+    fn compile_to_assembly(&self, input_path: &str) -> Result<String, String> {
+        let time_phases = std::env::var("CCC_TIME_PHASES").is_ok();
+        let total_start = Instant::now();
+
+        // ── Phase 1: Preprocessor ──────────────────────────────────
+        // TODO: When the preprocessor is implemented, this will:
+        //   - configure_preprocessor() with target macros, -D/-U, include paths
+        //   - process force-include files
+        //   - expand macros, process #include/#ifdef/#pragma
+        // For now, we read the source directly.
+        let phase_start = Instant::now();
+        let source = self.read_source_file(input_path)?;
+        if time_phases {
+            eprintln!("[TIME] preprocess: {:.3}s", phase_start.elapsed().as_secs_f64());
+        }
+
+        // Create the diagnostic engine.
+        let diag = DiagEngine::new();
+        let mut source_map = SourceMap::new();
+        let file_id = source_map.add_file(input_path.to_string(), source.clone());
+
+        // ── Phase 2: Lexer ─────────────────────────────────────────
+        let phase_start = Instant::now();
+        let tokens = crate::frontend::lexer::lex(&source_map, file_id, &diag);
+        if time_phases {
+            eprintln!(
+                "[TIME] lex: {:.3}s ({} tokens)",
+                phase_start.elapsed().as_secs_f64(),
+                tokens.len()
+            );
+        }
+        if diag.has_errors() {
+            diag.emit_all(&source_map);
+            return Err(format!("lexer errors in '{}'", input_path));
+        }
+
+        // ── Phase 3: Parser ────────────────────────────────────────
+        let phase_start = Instant::now();
+        let mut ctx = Ctx::new(self.target);
+        let translation_unit = crate::frontend::parser::parse(&tokens, &mut ctx, &diag);
+        if time_phases {
+            eprintln!("[TIME] parse: {:.3}s", phase_start.elapsed().as_secs_f64());
+        }
+        if diag.has_errors() {
+            diag.emit_all(&source_map);
+            return Err(format!("parse errors in '{}'", input_path));
+        }
+
+        // ── Phase 4: Sema ──────────────────────────────────────────
+        let phase_start = Instant::now();
+        crate::frontend::sema::analyze(&mut ctx, translation_unit, &diag);
+        if time_phases {
+            eprintln!("[TIME] sema: {:.3}s", phase_start.elapsed().as_secs_f64());
+        }
+        if diag.has_errors() {
+            diag.emit_all(&source_map);
