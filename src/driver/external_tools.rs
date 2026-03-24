@@ -68,3 +68,135 @@ pub fn compile_with_gcc_m16(driver: &Driver, input: &str, output: &str) -> Resul
 /// defined and assembly-mode tokenization enabled). For .s files, the content
 /// is read directly.
 #[allow(dead_code)]
+pub fn assemble_source_file_builtin(
+    driver: &Driver,
+    input: &str,
+) -> Result<Vec<u8>, String> {
+    let source = if super::file_types::is_assembly_with_cpp(input) {
+        // .S files need C preprocessing first.
+        // For now, just read directly. TODO: run built-in preprocessor with
+        // __ASSEMBLER__ defined and assembly-mode tokenization enabled.
+        let raw = std::fs::read_to_string(input)
+            .map_err(|e| format!("cannot read '{}': {}", input, e))?;
+
+        // Debug: dump preprocessed assembly if CCC_ASM_DEBUG is set.
+        if std::env::var("CCC_ASM_DEBUG").is_ok() {
+            let stem = std::path::Path::new(input)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown");
+            let debug_path = format!("/tmp/asm_debug_{}.s", stem);
+            let _ = std::fs::write(&debug_path, &raw);
+            eprintln!("cc1: dumped preprocessed assembly to {}", debug_path);
+        }
+
+        raw
+    } else {
+        std::fs::read_to_string(input)
+            .map_err(|e| format!("cannot read '{}': {}", input, e))?
+    };
+
+    // Route to the architecture-specific builtin assembler.
+    match driver.target {
+        crate::target::Target::X86_64 => {
+            use crate::backend::native::x86_64::assembler::X86_64Assembler;
+            let mut asm = X86_64Assembler::new();
+            Ok(asm.assemble(&source))
+        }
+        crate::target::Target::I386 => {
+            Err("i386 builtin assembler not yet implemented".into())
+        }
+    }
+}
+
+/// Assemble a source file using GCC as the external assembler.
+#[allow(dead_code)]
+pub fn assemble_source_file_gcc(
+    driver: &Driver,
+    input: &str,
+    output: &str,
+) -> Result<(), String> {
+    let mut cmd = Command::new("gcc");
+    cmd.arg("-c");
+    cmd.arg("-o").arg(output);
+
+    // Forward target.
+    match driver.target {
+        crate::target::Target::I386 => {
+            cmd.arg("-m32");
+        }
+        crate::target::Target::X86_64 => {
+            cmd.arg("-m64");
+        }
+    }
+
+    // Forward include paths (for .S preprocessing).
+    for p in &driver.include_paths {
+        cmd.arg(format!("-I{}", p));
+    }
+    for p in &driver.isystem_include_paths {
+        cmd.arg("-isystem").arg(p);
+    }
+
+    // Forward defines.
+    for d in &driver.defines {
+        if let Some(ref val) = d.value {
+            cmd.arg(format!("-D{}={}", d.name, val));
+        } else {
+            cmd.arg(format!("-D{}", d.name));
+        }
+    }
+
+    // Forward undefines.
+    for u in &driver.undef_macros {
+        cmd.arg(format!("-U{}", u));
+    }
+
+    if driver.nostdinc {
+        cmd.arg("-nostdinc");
+    }
+    if driver.undef_all {
+        cmd.arg("-undef");
+    }
+
+    // Forward force-include files.
+    for f in &driver.force_includes {
+        cmd.arg("-include").arg(f);
+    }
+
+    // Forward explicit language override.
+    if let Some(ref lang) = driver.explicit_language {
+        cmd.arg("-x").arg(lang);
+    }
+
+    // Forward RISC-V assembler flags.
+    cmd.args(build_asm_extra_args(driver));
+
+    // Forward extra assembler args.
+    for a in &driver.assembler_extra_args {
+        cmd.arg(format!("-Wa,{}", a));
+    }
+
+    cmd.arg(input);
+
+    if driver.verbose {
+        eprintln!("cc1: assembling with gcc: {:?}", cmd);
+    }
+
+    let status = cmd
+        .status()
+        .map_err(|e| format!("failed to invoke gcc for assembly: {}", e))?;
+
+    if !status.success() {
+        return Err(format!(
+            "gcc assembly failed with exit code {}",
+            status.code().unwrap_or(-1)
+        ));
+    }
+
+    Ok(())
+}
+
+// ── Assembler argument construction ────────────────────────────────────
+
+/// Build RISC-V-specific assembler flags.
