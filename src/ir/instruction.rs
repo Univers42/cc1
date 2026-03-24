@@ -543,6 +543,34 @@ impl Terminator {
             Terminator::CondBr {
                 true_bb, false_bb, ..
             } => {
+                if *true_bb == old {
+                    *true_bb = new;
+                }
+                if *false_bb == old {
+                    *false_bb = new;
+                }
+            }
+            Terminator::Switch {
+                default, cases, ..
+            } => {
+                if *default == old {
+                    *default = new;
+                }
+                for (_, bb) in cases {
+                    if *bb == old {
+                        *bb = new;
+                    }
+                }
+            }
+            Terminator::IndirectBr { targets, .. } => {
+                for t in targets {
+                    if *t == old {
+                        *t = new;
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 }
 
