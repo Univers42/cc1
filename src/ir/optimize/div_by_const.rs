@@ -290,3 +290,93 @@ fn compute_unsigned_magic_32(d: u32) -> (u64, u32) {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::instruction::Terminator;
+    use crate::ir::module::IrFunction;
+
+    #[test]
+    fn test_udiv_power_of_two() {
+        let mut f = IrFunction::new("test", IrType::I32, Linkage::External);
+        let b = f.create_block("entry");
+        let v0 = f.alloc_value();
+        let v1 = f.alloc_value();
+        f.block_mut(b).push(Instruction::Copy {
+            result: v0,
+            src: Operand::Const(ConstValue::I32(100)),
+        });
+        f.block_mut(b).push(Instruction::BinOp {
+            result: v1,
+            op: BinOpKind::UDiv,
+            lhs: Operand::Value(v0),
+            rhs: Operand::Const(ConstValue::I32(4)),
+            ty: IrType::I32,
+        });
+        f.block_mut(b).set_terminator(Terminator::Ret {
+            value: Some(Operand::Value(v1)),
+        });
+
+        let changed = div_by_const(&mut f, true);
+        assert!(changed);
+
+        // Should be replaced with LShr by 2.
+        let inst = &f.blocks[0].insts[1];
+        match inst {
+            Instruction::BinOp { op: BinOpKind::LShr, .. } => {}
+            other => panic!("Expected LShr, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_urem_power_of_two() {
+        let mut f = IrFunction::new("test", IrType::I32, Linkage::External);
+        let b = f.create_block("entry");
+        let v0 = f.alloc_value();
+        let v1 = f.alloc_value();
+        f.block_mut(b).push(Instruction::Copy {
+            result: v0,
+            src: Operand::Const(ConstValue::I32(100)),
+        });
+        f.block_mut(b).push(Instruction::BinOp {
+            result: v1,
+            op: BinOpKind::URem,
+            lhs: Operand::Value(v0),
+            rhs: Operand::Const(ConstValue::I32(8)),
+            ty: IrType::I32,
+        });
+        f.block_mut(b).set_terminator(Terminator::Ret {
+            value: Some(Operand::Value(v1)),
+        });
+
+        let changed = div_by_const(&mut f, true);
+        assert!(changed);
+
+        // Should be replaced with And by 7.
+        let inst = &f.blocks[0].insts[1];
+        match inst {
+            Instruction::BinOp { op: BinOpKind::And, rhs: Operand::Const(ConstValue::I32(7)), .. } => {}
+            other => panic!("Expected And with 7, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_no_change_on_32bit_target() {
+        let mut f = IrFunction::new("test", IrType::I32, Linkage::External);
+        let b = f.create_block("entry");
+        let v = f.alloc_value();
+        f.block_mut(b).push(Instruction::BinOp {
+            result: v,
+            op: BinOpKind::UDiv,
+            lhs: Operand::Const(ConstValue::I32(100)),
+            rhs: Operand::Const(ConstValue::I32(3)),
+            ty: IrType::I32,
+        });
+        f.block_mut(b).set_terminator(Terminator::Ret {
+            value: Some(Operand::Value(v)),
+        });
+
+        let changed = div_by_const(&mut f, false);
+        assert!(!changed);
+    }
+}
