@@ -187,3 +187,48 @@ mod tests {
     }
 
     #[test]
+    fn test_dce_preserves_side_effects() {
+        let mut f = IrFunction::new("test", IrType::Void, Linkage::External);
+        let b = f.create_block("entry");
+
+        let v0 = f.alloc_value();
+        let v1 = f.alloc_value(); // unused but side-effecting (call)
+
+        f.block_mut(b).push(Instruction::Alloca {
+            result: v0,
+            ty: IrType::I32,
+            align: 4,
+        });
+        f.block_mut(b).push(Instruction::Store {
+            addr: Operand::Value(v0),
+            value: Operand::Const(ConstValue::I32(42)),
+            ty: IrType::I32,
+        });
+        f.block_mut(b).set_terminator(Terminator::Ret { value: None });
+
+        let changed = dce(&mut f);
+        // Store is side-effecting so must be preserved.
+        // The Alloca used by the Store should also survive.
+        assert_eq!(f.block(b).insts.len(), 2);
+    }
+
+    #[test]
+    fn test_dce_no_change() {
+        let mut f = IrFunction::new("test", IrType::I32, Linkage::External);
+        let b = f.create_block("entry");
+
+        let v0 = f.alloc_value();
+        f.block_mut(b).push(Instruction::BinOp {
+            result: v0,
+            op: BinOpKind::Add,
+            lhs: Operand::Const(ConstValue::I32(1)),
+            rhs: Operand::Const(ConstValue::I32(2)),
+            ty: IrType::I32,
+        });
+        f.block_mut(b).set_terminator(Terminator::Ret {
+            value: Some(Operand::Value(v0)),
+        });
+
+        assert!(!dce(&mut f)); // Nothing to remove
+    }
+}
