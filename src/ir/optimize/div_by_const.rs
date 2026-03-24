@@ -148,3 +148,145 @@ fn try_udiv_by_const(
 }
 
 /// Try to replace `result = lhs / d` (signed, 32-bit).
+fn try_sdiv_by_const(
+    result: ValueId,
+    lhs: Operand,
+    d: i64,
+    ty: IrType,
+    func: &mut IrFunction,
+) -> Option<Vec<Instruction>> {
+    if d == 0 || d == 1 {
+        return None;
+    }
+
+    // Power of 2.
+    let abs_d = d.unsigned_abs();
+    if abs_d.is_power_of_two() {
+        let shift = abs_d.trailing_zeros();
+        let mut insts = Vec::new();
+
+        // For signed: add (n >> 31) & (d-1), then arithmetic shift right.
+        let sign_shift = func.alloc_value();
+        insts.push(Instruction::BinOp {
+            result: sign_shift,
+            op: BinOpKind::AShr,
+            lhs: lhs.clone(),
+            rhs: Operand::Const(ConstValue::I32(31)),
+            ty: ty.clone(),
+        });
+
+        let mask = func.alloc_value();
+        insts.push(Instruction::BinOp {
+            result: mask,
+            op: BinOpKind::LShr,
+            lhs: Operand::Value(sign_shift),
+            rhs: Operand::Const(ConstValue::I32(32 - shift as i32)),
+            ty: ty.clone(),
+        });
+
+        let adjusted = func.alloc_value();
+        insts.push(Instruction::BinOp {
+            result: adjusted,
+            op: BinOpKind::Add,
+            lhs: lhs.clone(),
+            rhs: Operand::Value(mask),
+            ty: ty.clone(),
+        });
+
+        let shifted = func.alloc_value();
+        insts.push(Instruction::BinOp {
+            result: shifted,
+            op: BinOpKind::AShr,
+            lhs: Operand::Value(adjusted),
+            rhs: Operand::Const(ConstValue::I32(shift as i32)),
+            ty: ty.clone(),
+        });
+
+        if d < 0 {
+            insts.push(Instruction::UnaryOp {
+                result,
+                op: UnaryOpKind::Neg,
+                operand: Operand::Value(shifted),
+                ty: ty.clone(),
+            });
+        } else {
+            insts.push(Instruction::Copy {
+                result,
+                src: Operand::Value(shifted),
+            });
+        }
+
+        return Some(insts);
+    }
+
+    // General magic number approach for signed division is complex;
+    // leave non-power-of-2 signed divisions alone for now.
+    None
+}
+
+/// Try to replace `result = lhs % d` (unsigned).
+fn try_urem_by_const(
+    result: ValueId,
+    lhs: Operand,
+    d: u64,
+    ty: IrType,
+    func: &mut IrFunction,
+) -> Option<Vec<Instruction>> {
+    if d == 0 {
+        return None;
+    }
+
+    // Power of 2: mask.
+    if d.is_power_of_two() {
+        return Some(vec![Instruction::BinOp {
+            result,
+            op: BinOpKind::And,
+            lhs,
+            rhs: Operand::Const(ConstValue::I32((d - 1) as i32)),
+            ty,
+        }]);
+    }
+
+    // For general case: rem = n - (n / d) * d
+    // We'd need to emit the udiv sequence first. Skip for now.
+    None
+}
+
+/// Try to replace `result = lhs % d` (signed).
+fn try_srem_by_const(
+    result: ValueId,
+    lhs: Operand,
+    d: i64,
+    ty: IrType,
+    func: &mut IrFunction,
+) -> Option<Vec<Instruction>> {
+    // Only handle power-of-2 for signed rem.
+    let abs_d = d.unsigned_abs();
+    if abs_d.is_power_of_two() {
+        // srem by power of 2: result = n - ((n + (n>>31 & (d-1))) & -d) ... complex
+        // Skip: leave to native instruction.
+    }
+    None
+}
+
+/// Compute unsigned magic number for 32-bit division.
+/// Returns (magic_multiplier, post_shift).
+fn compute_unsigned_magic_32(d: u32) -> (u64, u32) {
+    assert!(d > 1);
+
+    // Find minimum shift s such that ceil(2^(32+s) / d) fits in 33 bits.
+    let mut shift = 0u32;
+    loop {
+        let two_pow = 1u64 << (32 + shift);
+        let magic = (two_pow + d as u64 - 1) / d as u64; // ceil division
+        if magic <= (1u64 << 33) {
+            return (magic, shift);
+        }
+        shift += 1;
+        if shift > 32 {
+            // Fallback: shouldn't happen for valid divisors.
+            return ((1u64 << 33) / d as u64 + 1, 0);
+        }
+    }
+}
+
