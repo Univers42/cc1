@@ -641,3 +641,163 @@ pub fn parse_cli_args(driver: &mut Driver, argv0: &str, args: &[String]) -> Resu
 // ── Helper functions ───────────────────────────────────────────────────
 
 /// Parse a -D argument into a CliDefine.
+fn parse_define(s: &str) -> CliDefine {
+    if let Some(eq) = s.find('=') {
+        CliDefine {
+            name: s[..eq].to_string(),
+            value: Some(s[eq + 1..].to_string()),
+        }
+    } else {
+        CliDefine {
+            name: s.to_string(),
+            value: None, // Means "1"
+        }
+    }
+}
+
+/// Parse the -std= flag and set gnu_extensions / gnu89_inline accordingly.
+fn parse_std_flag(driver: &mut Driver, std: &str) {
+    match std {
+        "gnu89" | "gnu90" => {
+            driver.gnu_extensions = true;
+            driver.gnu89_inline = true;
+        }
+        "gnu99" | "gnu9x" | "gnu11" | "gnu1x" | "gnu17" | "gnu18" | "gnu23" | "gnu2x" => {
+            driver.gnu_extensions = true;
+            driver.gnu89_inline = false;
+        }
+        "c89" | "c90" | "iso9899:1990" | "iso9899:199409" => {
+            driver.gnu_extensions = false;
+            driver.gnu89_inline = true;
+        }
+        "c99" | "c9x" | "c11" | "c1x" | "c17" | "c18" | "c23" | "c2x"
+        | "iso9899:1999" | "iso9899:2011" | "iso9899:2017" | "iso9899:2024" => {
+            driver.gnu_extensions = false;
+            driver.gnu89_inline = false;
+        }
+        _ => {
+            // Unknown standard — default to gnu99.
+            driver.gnu_extensions = true;
+            driver.gnu89_inline = false;
+        }
+    }
+}
+
+/// Parse -fpatchable-function-entry=N,M.
+fn parse_patchable_entry(val: &str) -> Option<(u32, u32)> {
+    let parts: Vec<&str> = val.split(',').collect();
+    let n: u32 = parts.first().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let m: u32 = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    Some((n, m))
+}
+
+/// Escape a Make target name (for -MQ).
+fn escape_make_target(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '$' => result.push_str("$$"),
+            '#' | '=' | ':' | ' ' | '\t' => {
+                result.push('\\');
+                result.push(ch);
+            }
+            _ => result.push(ch),
+        }
+    }
+    result
+}
+
+/// Check if there are no input files in the remaining arguments.
+fn no_input_files(args: &[String]) -> bool {
+    args.iter().all(|a| a.starts_with('-'))
+}
+
+/// Check if an -f flag (after -f or -fno-) should be silently ignored.
+fn is_ignorable_f_flag(flag: &str) -> bool {
+    matches!(
+        flag,
+        "inline-functions"
+            | "inline-small-functions"
+            | "inline-functions-called-once"
+            | "ipa-cp"
+            | "ipa-cp-clone"
+            | "split-wide-types"
+            | "tree-loop-distribute-patterns"
+            | "tree-loop-vectorize"
+            | "tree-slp-vectorize"
+            | "vect-cost-model"
+            | "unwind-tables"
+            | "exceptions"
+            | "rtti"
+            | "plt"
+            | "semantic-interposition"
+            | "math-errno"
+            | "trapping-math"
+            | "signed-zeros"
+            | "associative-math"
+            | "reciprocal-math"
+            | "finite-math-only"
+            | "unsafe-math-optimizations"
+            | "fast-math"
+            | "cx-limited-range"
+            | "stack-check"
+            | "pic"
+            | "PIC"
+            | "PIE"
+            | "pie"
+            | "no-pie"
+            | "no-PIE"
+    )
+}
+
+/// Check if an -m flag (after -m or -mno-) should be silently ignored.
+fn is_ignorable_m_flag(flag: &str) -> bool {
+    matches!(
+        flag,
+        "80387"
+            | "fp-ret-in-387"
+            | "align-double"
+            | "mmx"
+            | "sse"
+            | "sse2"
+            | "red-zone"
+            | "popcnt"
+            | "cx16"
+            | "sahf"
+            | "bmi"
+            | "bmi2"
+            | "lzcnt"
+            | "fma"
+            | "f16c"
+            | "movbe"
+            | "tune=generic"
+            | "tune=native"
+    )
+}
+
+/// Print --version output (GCC-compatible: includes "Free Software Foundation"
+/// for Meson detection, plus backend mode info).
+fn print_version(driver: &Driver) {
+    println!("ccc (Claude's C Compiler, GCC-compatible) 14.2.0");
+    println!("Copyright (C) 2026 Free Software Foundation, Inc.");
+    println!("This is free software; see the source for copying conditions.");
+    println!(
+        "Target: {}, Backend: standalone (builtin assembler + linker)",
+        driver.target_triple()
+    );
+}
+
+/// Print -v (verbose, alone) output.
+fn print_verbose_version(driver: &Driver) {
+    eprintln!("Using built-in specs.");
+    eprintln!("Target: {}", driver.target_triple());
+    eprintln!(
+        "Configured with: --target={} --disable-multilib",
+        driver.target_triple()
+    );
+    eprintln!("Thread model: posix");
+    eprintln!("ccc version 14.2.0 (Claude's C Compiler)");
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────
+
