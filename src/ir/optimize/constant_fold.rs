@@ -243,3 +243,116 @@ fn f64_to_const(val: f64, ty: &IrType) -> ConstValue {
 }
 
 /// Fold a binary operation with constant operands.
+fn fold_binop(op: BinOpKind, lhs: &ConstValue, rhs: &ConstValue, ty: &IrType) -> Option<ConstValue> {
+    // Integer operations
+    if ty.is_integer() || ty.is_pointer() {
+        let l = const_to_i64(lhs)?;
+        let r = const_to_i64(rhs)?;
+        let lu = const_to_u64(lhs)?;
+        let ru = const_to_u64(rhs)?;
+
+        let result = match op {
+            BinOpKind::Add => Some(i64_to_const(l.wrapping_add(r), ty)),
+            BinOpKind::Sub => Some(i64_to_const(l.wrapping_sub(r), ty)),
+            BinOpKind::Mul => Some(i64_to_const(l.wrapping_mul(r), ty)),
+            BinOpKind::SDiv => {
+                if r == 0 { None } else { Some(i64_to_const(l.wrapping_div(r), ty)) }
+            }
+            BinOpKind::UDiv => {
+                if ru == 0 { None } else { Some(u64_to_const(lu.wrapping_div(ru), ty)) }
+            }
+            BinOpKind::SRem => {
+                if r == 0 { None } else { Some(i64_to_const(l.wrapping_rem(r), ty)) }
+            }
+            BinOpKind::URem => {
+                if ru == 0 { None } else { Some(u64_to_const(lu.wrapping_rem(ru), ty)) }
+            }
+            BinOpKind::And => Some(u64_to_const(lu & ru, ty)),
+            BinOpKind::Or => Some(u64_to_const(lu | ru, ty)),
+            BinOpKind::Xor => Some(u64_to_const(lu ^ ru, ty)),
+            BinOpKind::Shl => {
+                let shift = ru & 63;
+                Some(u64_to_const(lu.wrapping_shl(shift as u32), ty))
+            }
+            BinOpKind::LShr => {
+                let shift = ru & 63;
+                Some(u64_to_const(lu.wrapping_shr(shift as u32), ty))
+            }
+            BinOpKind::AShr => {
+                let shift = ru & 63;
+                Some(i64_to_const(l.wrapping_shr(shift as u32), ty))
+            }
+            _ => None,
+        };
+        // Truncate to type width
+        return result.map(|c| truncate_const(&c, ty));
+    }
+
+    // Float operations
+    if ty.is_float() {
+        let l = const_to_f64(lhs)?;
+        let r = const_to_f64(rhs)?;
+        let result = match op {
+            BinOpKind::FAdd => l + r,
+            BinOpKind::FSub => l - r,
+            BinOpKind::FMul => l * r,
+            BinOpKind::FDiv => l / r, // Float div by zero is fine (produces Inf/NaN)
+            BinOpKind::FRem => l % r,
+            _ => return None,
+        };
+        return Some(f64_to_const(result, ty));
+    }
+
+    None
+}
+
+/// Truncate a constant to fit the given type width.
+fn truncate_const(c: &ConstValue, ty: &IrType) -> ConstValue {
+    let bits = ty.bit_width();
+    if bits == 0 || bits >= 64 {
+        return c.clone();
+    }
+    let mask = if bits < 64 { (1u64 << bits) - 1 } else { u64::MAX };
+    let raw = const_to_u64(c).unwrap_or(0) & mask;
+    if ty.is_signed() {
+        // Sign extend from bit_width
+        let sign_bit = 1u64 << (bits - 1);
+        let val = if raw & sign_bit != 0 {
+            (raw | !mask) as i64
+        } else {
+            raw as i64
+        };
+        i64_to_const(val, ty)
+    } else {
+        u64_to_const(raw, ty)
+    }
+}
+
+/// Fold a unary operation with a constant operand.
+fn fold_unaryop(op: UnaryOpKind, val: &ConstValue, ty: &IrType) -> Option<ConstValue> {
+    match op {
+        UnaryOpKind::Neg => {
+            if ty.is_integer() {
+                let v = const_to_i64(val)?;
+                Some(truncate_const(&i64_to_const(v.wrapping_neg(), ty), ty))
+            } else {
+                None
+            }
+        }
+        UnaryOpKind::FNeg => {
+            let v = const_to_f64(val)?;
+            Some(f64_to_const(-v, ty))
+        }
+        UnaryOpKind::BitNot => {
+            let v = const_to_u64(val)?;
+            Some(truncate_const(&u64_to_const(!v, ty), ty))
+        }
+        UnaryOpKind::LogNot => {
+            let v = const_to_i64(val)?;
+            let result = if v == 0 { 1i64 } else { 0i64 };
+            Some(i64_to_const(result, ty))
+        }
+    }
+}
+
+/// Fold an integer comparison with constant operands.
