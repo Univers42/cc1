@@ -138,3 +138,73 @@ pub fn run_inline(module: &mut IrModule, _timing: bool) {
 }
 
 /// Count total instructions in a function.
+fn count_instructions(func: &IrFunction) -> usize {
+    func.blocks.iter().map(|b| b.insts.len()).sum()
+}
+
+/// Check if a function is eligible for inlining (no excluded instructions).
+fn is_eligible_for_inlining(func: &IrFunction) -> bool {
+    for block in &func.blocks {
+        for inst in &block.insts {
+            match inst {
+                Instruction::DynAlloca { .. }
+                | Instruction::StackRestore { .. } => return false,
+                Instruction::InlineAsm { .. } => {
+                    // Allow inline asm, but could restrict in future
+                }
+                _ => {}
+            }
+        }
+        // Check for indirect branches
+        if matches!(block.terminator, Terminator::IndirectBr { .. }) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Inline a specific call site. Returns true on success.
+fn inline_call_site(
+    module: &mut IrModule,
+    caller_idx: usize,
+    call_bi: usize,
+    call_ii: usize,
+    callee_idx: usize,
+) -> bool {
+    // Clone the callee's blocks (we need ownership).
+    let callee = module.functions[callee_idx].clone();
+    let caller = &mut module.functions[caller_idx];
+
+    // Extract the call instruction.
+    let call_inst = &caller.blocks[call_bi].insts[call_ii];
+    let (call_result, call_args, call_ret_ty) = match call_inst {
+        Instruction::Call { result, args, ret_ty, .. } => {
+            (*result, args.clone(), ret_ty.clone())
+        }
+        _ => return false,
+    };
+
+    // Allocate new ValueIds and BlockIds for cloned callee.
+    let value_offset = caller.value_count();
+    let block_offset = caller.block_count() as u32;
+
+    let remap_value = |v: ValueId| -> ValueId {
+        ValueId(v.0 + value_offset)
+    };
+    let remap_block = |b: BlockId| -> BlockId {
+        BlockId(b.0 + block_offset)
+    };
+
+    let remap_operand = |op: &Operand| -> Operand {
+        match op {
+            Operand::Value(v) => Operand::Value(remap_value(*v)),
+            Operand::Const(c) => Operand::Const(c.clone()),
+            Operand::Global(g) => Operand::Global(g.clone()),
+            Operand::Label(b) => Operand::Label(remap_block(*b)),
+        }
+    };
+
+    // Create a merge block for the return value.
+    let merge_bid = caller.create_block("inline.merge");
+
+    // Clone and remap callee blocks.
