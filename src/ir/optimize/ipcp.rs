@@ -155,3 +155,143 @@ fn dead_call_elimination(module: &mut IrModule) -> bool {
 }
 
 /// If a parameter receives the same constant at all call sites, propagate it.
+fn constant_argument_propagation(module: &mut IrModule) -> bool {
+    let mut changed = false;
+
+    // For each function, analyze all call sites.
+    let names: Vec<String> = module.functions.iter().map(|f| f.name.clone()).collect();
+
+    for target_name in &names {
+        // Find the target function.
+        let target_idx = match module.functions.iter().position(|f| &f.name == target_name) {
+            Some(i) => i,
+            None => continue,
+        };
+
+        let func = &module.functions[target_idx];
+        if func.blocks.is_empty() || func.params.is_empty() {
+            continue;
+        }
+        if func.linkage == Linkage::External {
+            continue; // Could be called from outside
+        }
+
+        let num_params = func.params.len();
+        let param_values: Vec<ValueId> = func.params.iter().map(|p| p.value).collect();
+
+        // Collect constant values for each parameter across all call sites.
+        let mut param_consts: Vec<Option<ConstValue>> = vec![None; num_params];
+        let mut param_varies: Vec<bool> = vec![false; num_params];
+
+        for (fi, caller) in module.functions.iter().enumerate() {
+            for block in &caller.blocks {
+                for inst in &block.insts {
+                    if let Instruction::Call { callee, args, .. } = inst {
+                        if callee == target_name {
+                            for (pi, (arg, _)) in args.iter().enumerate() {
+                                if pi >= num_params {
+                                    break;
+                                }
+                                if param_varies[pi] {
+                                    continue;
+                                }
+                                if let Operand::Const(c) = arg {
+                                    match &param_consts[pi] {
+                                        None => param_consts[pi] = Some(c.clone()),
+                                        Some(prev) => {
+                                            if prev != c {
+                                                param_varies[pi] = true;
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    param_varies[pi] = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Propagate constants into the function body.
+        let target = &mut module.functions[target_idx];
+        for pi in 0..num_params {
+            if param_varies[pi] {
+                continue;
+            }
+            if let Some(cv) = &param_consts[pi] {
+                let pval = param_values[pi];
+                let const_op = Operand::Const(cv.clone());
+
+                // Replace uses of the parameter value.
+                for block in &mut target.blocks {
+                    for inst in &mut block.insts {
+                        replace_value_in_instruction(inst, pval, &const_op);
+                    }
+                    replace_value_in_terminator(&mut block.terminator, pval, &const_op);
+                }
+                changed = true;
+            }
+        }
+    }
+
+    changed
+}
+
+/// Check if a function is pure (no side effects: no stores, no calls, no volatile).
+fn is_function_pure(func: &crate::ir::module::IrFunction) -> bool {
+    for block in &func.blocks {
+        for inst in &block.insts {
+            if inst.has_side_effects() {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Build a map of ValueId -> use count.
+fn build_use_counts(func: &crate::ir::module::IrFunction) -> HashMap<ValueId, usize> {
+    let mut counts: HashMap<ValueId, usize> = HashMap::new();
+
+    for block in &func.blocks {
+        for inst in &block.insts {
+            inst.for_each_operand(|op| {
+                if let Operand::Value(v) = op {
+                    *counts.entry(*v).or_insert(0) += 1;
+                }
+            });
+        }
+        block.terminator.for_each_operand(|op| {
+            if let Operand::Value(v) = op {
+                *counts.entry(*v).or_insert(0) += 1;
+            }
+        });
+    }
+
+    counts
+}
+
+/// Replace all uses of a value in an instruction's operands.
+fn replace_value_in_instruction(inst: &mut Instruction, old: ValueId, new_op: &Operand) {
+    inst.for_each_operand_mut(|op| {
+        if let Operand::Value(v) = op {
+            if *v == old {
+                *op = new_op.clone();
+            }
+        }
+    });
+}
+
+/// Replace all uses of a value in a terminator's operands.
+fn replace_value_in_terminator(term: &mut Terminator, old: ValueId, new_op: &Operand) {
+    term.for_each_operand_mut(|op| {
+        if let Operand::Value(v) = op {
+            if *v == old {
+                *op = new_op.clone();
+            }
+        }
+    });
+}
+
