@@ -9,6 +9,7 @@ pub mod module;
 pub mod instruction;
 pub mod display;
 pub mod lower;
+pub mod optimize;
 
 pub use types::*;
 pub use module::*;
