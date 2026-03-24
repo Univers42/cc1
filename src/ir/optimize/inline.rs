@@ -492,3 +492,59 @@ fn remap_instruction(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_count_instructions() {
+        let mut f = IrFunction::new("test", IrType::I32, Linkage::External);
+        let b = f.create_block("entry");
+        let v = f.alloc_value();
+        f.block_mut(b).push(Instruction::BinOp {
+            result: v,
+            op: BinOpKind::Add,
+            lhs: Operand::Const(ConstValue::I32(1)),
+            rhs: Operand::Const(ConstValue::I32(2)),
+            ty: IrType::I32,
+        });
+        f.block_mut(b).set_terminator(Terminator::Ret {
+            value: Some(Operand::Value(v)),
+        });
+        assert_eq!(count_instructions(&f), 1);
+    }
+
+    #[test]
+    fn test_inline_eligibility() {
+        let mut f = IrFunction::new("test", IrType::I32, Linkage::Internal);
+        let b = f.create_block("entry");
+        let v = f.alloc_value();
+        f.block_mut(b).push(Instruction::BinOp {
+            result: v,
+            op: BinOpKind::Add,
+            lhs: Operand::Const(ConstValue::I32(1)),
+            rhs: Operand::Const(ConstValue::I32(2)),
+            ty: IrType::I32,
+        });
+        f.block_mut(b).set_terminator(Terminator::Ret {
+            value: Some(Operand::Value(v)),
+        });
+        assert!(is_eligible_for_inlining(&f));
+    }
+
+    #[test]
+    fn test_inline_ineligible_dynalloca() {
+        let mut f = IrFunction::new("test", IrType::Ptr, Linkage::Internal);
+        let b = f.create_block("entry");
+        let v = f.alloc_value();
+        f.block_mut(b).push(Instruction::DynAlloca {
+            result: v,
+            ty: IrType::I32,
+            count: Operand::Const(ConstValue::I32(10)),
+        });
+        f.block_mut(b).set_terminator(Terminator::Ret {
+            value: Some(Operand::Value(v)),
+        });
+        assert!(!is_eligible_for_inlining(&f));
+    }
+}
