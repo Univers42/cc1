@@ -1,0 +1,199 @@
+#!/bin/sh
+# fcc — Driver for cc1 (C89 compiler front-end for LLVM)
+#
+# Usage: fcc [options] infile.c [-o outfile]
+#
+# This driver orchestrates:
+#   1. cc1   — C89 → LLVM IR (.ll)
+#   2. llc   — LLVM IR → assembly (.s) or object file (.o)
+#   3. ld/cc — link into executable (via system cc)
+#
+# Environment variables:
+#   CC1      Path to cc1 binary (default: ./target/release/cc1)
+#   LLC      Path to llc (default: llc)
+#   LINKER   Path to linker/cc wrapper (default: cc)
+
+set -e
+
+# ── Defaults ──────────────────────────────────────────────────────────
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CC1="${CC1:-${SCRIPT_DIR}/target/release/cc1}"
+LLC="${LLC:-llc}"
+LINKER="${LINKER:-cc}"
+
+TARGET="i386"
+OUTPUT=""
+INPUT=""
+KEEP_TEMPS=0
+COMPILE_ONLY=0
+ASSEMBLE_ONLY=0
+CC1_FLAGS=""
+LLC_FLAGS=""
+LINK_FLAGS=""
+
+# ── Parse Arguments ───────────────────────────────────────────────────
+
+usage() {
+    cat <<EOF
+Usage: fcc [options] infile.c [-o outfile]
+
+Options:
+  -o <file>         Write output to <file>
+  -m32              Target i386 (default)
+  -m64              Target x86_64
+  -S                Compile to assembly only (produce .s)
+  -c                Compile and assemble only (produce .o)
+  -g                Emit debug info
+  -E                Preprocess only (not yet implemented)
+  --dump-tokens     Dump tokens and exit
+  --dump-ast        Dump AST and exit
+  --dump-types      Dump types and exit
+  --keep-temps      Keep intermediate files (.ll, .s)
+  --help            Show this help
+  --version         Show version
+EOF
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -o)
+            shift
+            OUTPUT="$1"
+            ;;
+        -o*)
+            OUTPUT="${1#-o}"
+            ;;
+        -m32)
+            TARGET="i386"
+            CC1_FLAGS="$CC1_FLAGS -m32"
+            LLC_FLAGS="$LLC_FLAGS -march=x86"
+            LINK_FLAGS="$LINK_FLAGS -m32"
+            ;;
+        -m64)
+            TARGET="x86_64"
+            CC1_FLAGS="$CC1_FLAGS -m64"
+            LLC_FLAGS="$LLC_FLAGS -march=x86-64"
+            LINK_FLAGS="$LINK_FLAGS -m64"
+            ;;
+        -g)
+            CC1_FLAGS="$CC1_FLAGS -g"
+            ;;
+        -S)
+            ASSEMBLE_ONLY=1
+            ;;
+        -c)
+            COMPILE_ONLY=1
+            ;;
+        -E)
+            CC1_FLAGS="$CC1_FLAGS -E"
+            ;;
+        --dump-tokens|--dump-ast|--dump-types)
+            CC1_FLAGS="$CC1_FLAGS $1"
+            ;;
+        --keep-temps)
+            KEEP_TEMPS=1
+            ;;
+        --help|-h)
+            usage
+            exit 0
+            ;;
+        --version|-v)
+            echo "fcc 0.1.0 — C89 compiler driver (cc1 + LLVM)"
+            exit 0
+            ;;
+        -*)
+            echo "fcc: error: unknown option: $1" >&2
+            exit 1
+            ;;
+        *)
+            if [ -n "$INPUT" ]; then
+                echo "fcc: error: multiple input files not supported" >&2
+                exit 1
+            fi
+            INPUT="$1"
+            ;;
+    esac
+    shift
+done
+
+if [ -z "$INPUT" ]; then
+    echo "fcc: error: no input file" >&2
+    usage >&2
+    exit 1
+fi
+
+if [ ! -f "$INPUT" ]; then
+    echo "fcc: error: $INPUT: no such file" >&2
+    exit 1
+fi
+
+# ── Derive File Names ────────────────────────────────────────────────
+
+BASENAME="$(basename "$INPUT" .c)"
+DIRNAME="$(dirname "$INPUT")"
+LL_FILE="${DIRNAME}/${BASENAME}.ll"
+S_FILE="${DIRNAME}/${BASENAME}.s"
+O_FILE="${DIRNAME}/${BASENAME}.o"
+
+if [ -z "$OUTPUT" ]; then
+    if [ "$ASSEMBLE_ONLY" -eq 1 ]; then
+        OUTPUT="$S_FILE"
+    elif [ "$COMPILE_ONLY" -eq 1 ]; then
+        OUTPUT="$O_FILE"
+    else
+        OUTPUT="a.out"
+    fi
+fi
+
+# ── Cleanup ──────────────────────────────────────────────────────────
+
+cleanup() {
+    if [ "$KEEP_TEMPS" -eq 0 ]; then
+        rm -f "$LL_FILE" "$S_FILE"
+        # Don't remove .o if that's the final output
+        if [ "$COMPILE_ONLY" -eq 0 ]; then
+            rm -f "$O_FILE"
+        fi
+    fi
+}
+trap cleanup EXIT
+
+# ── Step 1: cc1 — C89 → LLVM IR ─────────────────────────────────────
+
+echo "[fcc] cc1: $INPUT → $LL_FILE"
+# shellcheck disable=SC2086
+"$CC1" "$INPUT" -o "$LL_FILE" $CC1_FLAGS
+
+if [ $? -ne 0 ]; then
+    echo "fcc: error: cc1 failed" >&2
+    exit 1
+fi
+
+# ── Step 2: llc — LLVM IR → Assembly ────────────────────────────────
+
+if [ "$ASSEMBLE_ONLY" -eq 1 ]; then
+    echo "[fcc] llc: $LL_FILE → $OUTPUT"
+    # shellcheck disable=SC2086
+    "$LLC" "$LL_FILE" -o "$OUTPUT" $LLC_FLAGS
+    exit $?
+fi
+
+echo "[fcc] llc: $LL_FILE → $S_FILE"
+# shellcheck disable=SC2086
+"$LLC" "$LL_FILE" -o "$S_FILE" $LLC_FLAGS
+
+# ── Step 3: Assemble + Link ─────────────────────────────────────────
+
+if [ "$COMPILE_ONLY" -eq 1 ]; then
+    echo "[fcc] as: $S_FILE → $OUTPUT"
+    # shellcheck disable=SC2086
+    "$LINKER" -c "$S_FILE" -o "$OUTPUT" $LINK_FLAGS
+    exit $?
+fi
+
+echo "[fcc] link: $S_FILE → $OUTPUT"
+# shellcheck disable=SC2086
+"$LINKER" "$S_FILE" -o "$OUTPUT" $LINK_FLAGS
+
+echo "[fcc] done: $OUTPUT"
